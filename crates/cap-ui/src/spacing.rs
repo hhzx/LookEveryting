@@ -34,7 +34,7 @@ pub mod component {
     pub const TITLEBAR_HEIGHT: f32 = 40.0;
     pub const TOOLBAR_HEIGHT: f32 = 44.0;
     pub const SIDEBAR_WIDTH: f32 = 240.0;
-    pub const SIDEBAR_COLLAPSED: f32 = 48.0;
+    pub const SIDEBAR_COLLAPSED: f32 = 128.0;
     pub const INFO_PANEL_WIDTH: f32 = 280.0;
     pub const DRAWER_WIDTH: f32 = 320.0;
     pub const THUMBNAIL_SIZE: f32 = 120.0;

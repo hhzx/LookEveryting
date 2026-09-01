@@ -4,8 +4,8 @@ use cap_core::all_supported_filter;
 use cap_i18n::Locale;
 use cap_ui::colors::{Palette, Semantic};
 use cap_ui::layout::LayoutMode;
-use cap_ui::spacing::component;
-use cap_ui::widgets::{ghost_button, icon_button, paint_floating_panel};
+use cap_ui::spacing::{component, space};
+use cap_ui::widgets::{ghost_button, icon_button, paint_floating_panel, panel_frame, titlebar_frame};
 use egui::{pos2, vec2, Align2, Color32, Frame, RichText, Sense, Ui};
 
 use crate::app::{LoadedMedia, LookApp};
@@ -19,7 +19,7 @@ pub fn draw(app: &mut LookApp, ctx: &egui::Context) {
 
     egui::TopBottomPanel::top("titlebar")
         .exact_height(component::TITLEBAR_HEIGHT)
-        .frame(Frame::NONE.fill(Palette::SURFACE))
+        .frame(titlebar_frame(Palette::SURFACE))
         .show(ctx, |ui| title_bar(app, ui));
 
     if layout != LayoutMode::Compact {
@@ -30,7 +30,7 @@ pub fn draw(app: &mut LookApp, ctx: &egui::Context) {
             } else {
                 component::SIDEBAR_COLLAPSED
             })
-            .frame(Frame::NONE.fill(Palette::SURFACE))
+            .frame(panel_frame(Palette::SURFACE))
             .show(ctx, |ui| sidebar(app, ui, layout));
     }
 
@@ -38,7 +38,7 @@ pub fn draw(app: &mut LookApp, ctx: &egui::Context) {
         egui::SidePanel::right("info")
             .resizable(false)
             .exact_width(component::INFO_PANEL_WIDTH)
-            .frame(Frame::NONE.fill(Palette::SURFACE))
+            .frame(panel_frame(Palette::SURFACE))
             .show(ctx, |ui| info_panel(app, ui));
     }
 
@@ -65,12 +65,14 @@ pub fn draw(app: &mut LookApp, ctx: &egui::Context) {
         egui::Window::new(app.i18n.t("settings-title"))
             .collapsible(false)
             .resizable(false)
+            .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
             .show(ctx, |ui| settings_panel(app, ui));
     }
 
     if let Some(err) = app.error.clone() {
         egui::Window::new(app.i18n.t("toast-open-failed"))
             .collapsible(false)
+            .anchor(Align2::CENTER_CENTER, vec2(0.0, -80.0))
             .show(ctx, |ui| {
                 ui.label(err);
                 if ui.button(app.i18n.t("common-close")).clicked() {
@@ -83,22 +85,29 @@ pub fn draw(app: &mut LookApp, ctx: &egui::Context) {
 }
 
 fn title_bar(app: &mut LookApp, ui: &mut Ui) {
-    ui.horizontal_centered(|ui| {
-        ui.add_space(12.0);
+    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        ui.spacing_mut().item_spacing.x = space::S2;
         ui.label(RichText::new("◇").color(Palette::ACCENT).size(16.0));
         ui.label(
             RichText::new(app.i18n.t("app-title"))
                 .color(Semantic::FG_SECONDARY)
                 .size(13.0),
         );
-        ui.separator();
-        ui.label(
-            RichText::new(app.file_name())
-                .color(Semantic::FG_PRIMARY)
-                .size(13.0),
-        );
+        if !app.file_name().is_empty() {
+            ui.separator();
+            ui.label(
+                RichText::new(app.file_name())
+                    .color(Semantic::FG_PRIMARY)
+                    .size(13.0),
+            );
+        }
+
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ghost_button(ui, "⚙").clicked() {
+            ui.spacing_mut().item_spacing.x = space::S2;
+            if ghost_button(ui, "⚙")
+                .on_hover_text(app.i18n.t("settings-title"))
+                .clicked()
+            {
                 app.settings_open = !app.settings_open;
                 app.touch();
             }
@@ -110,16 +119,17 @@ fn title_bar(app: &mut LookApp, ui: &mut Ui) {
 }
 
 fn sidebar(app: &mut LookApp, ui: &mut Ui, layout: LayoutMode) {
-    ui.add_space(8.0);
-    if icon_button(ui, "📂", app.i18n.t("common-open")).clicked() {
+    ui.spacing_mut().item_spacing.y = space::S1;
+    if ghost_button(ui, app.i18n.t("common-open")).clicked() {
         open_file_dialog(app);
     }
-    if icon_button(ui, "ℹ", app.i18n.t("toolbar-info")).clicked() {
+    if ghost_button(ui, app.i18n.t("toolbar-info")).clicked() {
         app.info_open = !app.info_open;
         app.touch();
     }
-    ui.add_space(8.0);
+    ui.add_space(space::S2);
     ui.separator();
+    ui.add_space(space::S2);
     if layout == LayoutMode::Spacious {
         ui.label(
             RichText::new(app.i18n.t("browse-grid"))
@@ -214,49 +224,29 @@ fn viewport(app: &mut LookApp, ui: &mut Ui) {
 }
 
 fn empty_state(app: &mut LookApp, ui: &mut Ui, rect: egui::Rect) {
-    let center = rect.center();
-    ui.painter().text(
-        center + vec2(0.0, -40.0),
-        Align2::CENTER_CENTER,
-        "🖼",
-        egui::FontId::proportional(48.0),
-        Semantic::FG_MUTED,
-    );
-    ui.painter().text(
-        center,
-        Align2::CENTER_CENTER,
-        app.i18n.t("empty-title"),
-        egui::FontId::proportional(18.0),
-        Semantic::FG_SECONDARY,
-    );
-    ui.painter().text(
-        center + vec2(0.0, 28.0),
-        Align2::CENTER_CENTER,
-        app.i18n.t("empty-subtitle"),
-        egui::FontId::proportional(13.0),
-        Semantic::FG_MUTED,
-    );
-
-    let btn_rect = egui::Rect::from_center_size(center + vec2(0.0, 72.0), vec2(120.0, 36.0));
-    let resp = ui.allocate_rect(btn_rect, Sense::click());
-    if resp.clicked() {
-        open_file_dialog(app);
-    }
-    if ui.is_rect_visible(btn_rect) {
-        let bg = if resp.hovered() {
-            Palette::SURFACE_RAISED
-        } else {
-            Color32::TRANSPARENT
-        };
-        ui.painter().rect_filled(btn_rect, 6.0, bg);
-        ui.painter().text(
-            btn_rect.center(),
-            Align2::CENTER_CENTER,
-            app.i18n.t("empty-open-button"),
-            egui::FontId::proportional(13.0),
-            Semantic::FG_SECONDARY,
-        );
-    }
+    let inner = rect.shrink(24.0);
+    ui.allocate_ui_at_rect(inner, |ui| {
+        ui.vertical_centered(|ui| {
+            ui.add_space(inner.height() * 0.28);
+            ui.label(RichText::new("🖼").size(48.0).color(Semantic::FG_MUTED));
+            ui.add_space(12.0);
+            ui.label(
+                RichText::new(app.i18n.t("empty-title"))
+                    .size(18.0)
+                    .color(Semantic::FG_SECONDARY),
+            );
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(app.i18n.t("empty-subtitle"))
+                    .size(13.0)
+                    .color(Semantic::FG_MUTED),
+            );
+            ui.add_space(16.0);
+            if ghost_button(ui, app.i18n.t("empty-open-button")).clicked() {
+                open_file_dialog(app);
+            }
+        });
+    });
 
     ui.ctx().input(|i| {
         if !i.raw.dropped_files.is_empty() {

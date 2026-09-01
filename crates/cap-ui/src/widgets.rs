@@ -1,9 +1,29 @@
 //! Reusable egui widgets styled with design tokens.
 
-use egui::{Color32, Response, RichText, Ui, Vec2};
+use egui::{Color32, Frame, Margin, Response, RichText, Ui, Vec2};
 
 use crate::colors::{Palette, Semantic};
-use crate::spacing::{component, radius};
+use crate::spacing::{component, radius, space};
+
+/// Standard inner padding for chrome panels (sidebar, title bar, info).
+pub fn panel_margin() -> Margin {
+    Margin::symmetric(component::PANEL_PADDING as i8, space::S2 as i8)
+}
+
+/// Panel frame with consistent edge insets.
+pub fn panel_frame(fill: Color32) -> Frame {
+    Frame::NONE.fill(fill).inner_margin(panel_margin())
+}
+
+/// Title bar frame — horizontal inset only, content is vertically centered.
+pub fn titlebar_frame(fill: Color32) -> Frame {
+    Frame::NONE.fill(fill).inner_margin(Margin {
+        left: component::PANEL_PADDING as i8,
+        right: component::PANEL_PADDING as i8,
+        top: 0,
+        bottom: 0,
+    })
+}
 
 /// Icon-only button used in toolbars.
 pub fn icon_button(ui: &mut Ui, label: &str, tooltip: &str) -> Response {
@@ -48,7 +68,11 @@ pub fn primary_button(ui: &mut Ui, text: &str) -> Response {
 
 /// Ghost button for secondary actions.
 pub fn ghost_button(ui: &mut Ui, text: &str) -> Response {
-    ui.add(egui::Button::new(RichText::new(text).color(Semantic::FG_SECONDARY)).frame(false))
+    ui.add(
+        egui::Button::new(RichText::new(text).color(Semantic::FG_SECONDARY))
+            .frame(false)
+            .min_size(Vec2::new(0.0, component::ICON_BUTTON)),
+    )
 }
 
 /// Floating panel background painter helper.

@@ -28,6 +28,7 @@ struct LookEverytingApp {
 
 impl LookEverytingApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        cap_ui::install_fonts(&cc.egui_ctx);
         let theme = Theme::dark();
         theme.install(&cc.egui_ctx);
         Self {
