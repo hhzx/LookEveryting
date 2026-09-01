@@ -1,0 +1,15 @@
+[package]
+name = "cap-image"
+description = "Image loading and viewing for LookEveryting"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+cap-core = { path = "../cap-core" }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff", "ico"] }
+thiserror = "2"
+
+[dev-dependencies]
+image = { version = "0.25", features = ["png"] }
+tempfile = "3"

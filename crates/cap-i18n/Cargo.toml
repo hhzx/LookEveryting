@@ -1,0 +1,8 @@
+[package]
+name = "cap-i18n"
+description = "Internationalization helpers for LookEveryting"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

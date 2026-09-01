@@ -1,0 +1,25 @@
+# Build artifacts
+/target/
+**/target/
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.user
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+
+# Secrets — never commit
+.env
+.env.*
+*.pem
+*.key
+credentials.json

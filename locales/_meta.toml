@@ -1,0 +1,16 @@
+# Supported locales for LookEveryting
+# Used by cap-i18n build scripts
+
+[[locale]]
+id = "en-US"
+name = "English"
+native_name = "English"
+direction = "ltr"
+fallback = true
+
+[[locale]]
+id = "zh-Hans"
+name = "Chinese (Simplified)"
+native_name = "简体中文"
+direction = "ltr"
+fallback = false

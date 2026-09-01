@@ -1,0 +1,25 @@
+{
+  "$schema": "./schema.json",
+  "meta": {
+    "name": "LookEveryting Shadows",
+    "version": "1.0.0"
+  },
+  "elevation": {
+    "none": "none",
+    "sm": "0 1px 2px 0 rgba(0, 0, 0, 0.4)",
+    "md": "0 4px 12px 0 rgba(0, 0, 0, 0.5)",
+    "lg": "0 8px 24px 0 rgba(0, 0, 0, 0.6)",
+    "xl": "0 16px 48px 0 rgba(0, 0, 0, 0.7)"
+  },
+  "component": {
+    "floating-toolbar": "md",
+    "drawer": "lg",
+    "dropdown": "md",
+    "toast": "lg",
+    "modal": "xl"
+  },
+  "blur": {
+    "toolbar": 12,
+    "drawer-scrim": 4
+  }
+}

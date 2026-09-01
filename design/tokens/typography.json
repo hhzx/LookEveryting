@@ -1,0 +1,95 @@
+{
+  "$schema": "./schema.json",
+  "meta": {
+    "name": "LookEveryting Typography",
+    "version": "1.0.0"
+  },
+  "fontFamily": {
+    "sans": [
+      "Segoe UI Variable",
+      "Segoe UI",
+      "PingFang SC",
+      "Noto Sans SC",
+      "system-ui",
+      "-apple-system",
+      "sans-serif"
+    ],
+    "mono": [
+      "Cascadia Code",
+      "Consolas",
+      "Noto Sans Mono",
+      "monospace"
+    ]
+  },
+  "fontSize": {
+    "xs": 11,
+    "sm": 13,
+    "base": 15,
+    "lg": 18,
+    "xl": 22,
+    "2xl": 28
+  },
+  "lineHeight": {
+    "tight": 1.2,
+    "snug": 1.35,
+    "normal": 1.5,
+    "relaxed": 1.625
+  },
+  "fontWeight": {
+    "regular": 400,
+    "medium": 500,
+    "semibold": 600
+  },
+  "letterSpacing": {
+    "tight": -0.02,
+    "normal": 0,
+    "wide": 0.02
+  },
+  "styles": {
+    "display": {
+      "size": "2xl",
+      "weight": "semibold",
+      "lineHeight": "tight",
+      "letterSpacing": "tight"
+    },
+    "title": {
+      "size": "lg",
+      "weight": "semibold",
+      "lineHeight": "snug"
+    },
+    "heading": {
+      "size": "base",
+      "weight": "medium",
+      "lineHeight": "snug"
+    },
+    "body": {
+      "size": "base",
+      "weight": "regular",
+      "lineHeight": "normal"
+    },
+    "caption": {
+      "size": "sm",
+      "weight": "regular",
+      "lineHeight": "normal",
+      "color": "secondary"
+    },
+    "label": {
+      "size": "sm",
+      "weight": "medium",
+      "lineHeight": "snug"
+    },
+    "mono": {
+      "family": "mono",
+      "size": "sm",
+      "weight": "regular",
+      "lineHeight": "normal"
+    },
+    "overline": {
+      "size": "xs",
+      "weight": "medium",
+      "lineHeight": "tight",
+      "letterSpacing": "wide",
+      "color": "tertiary"
+    }
+  }
+}

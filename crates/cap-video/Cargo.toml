@@ -1,0 +1,13 @@
+[package]
+name = "cap-video"
+description = "Video metadata for LookEveryting"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+cap-core = { path = "../cap-core" }
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"

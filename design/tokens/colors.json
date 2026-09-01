@@ -1,0 +1,65 @@
+{
+  "$schema": "./schema.json",
+  "meta": {
+    "name": "LookEveryting Dark",
+    "version": "1.0.0",
+    "mode": "dark",
+    "description": "深色极简主题 — 内容优先的本地媒体查看器"
+  },
+  "palette": {
+    "canvas": "#0A0A0B",
+    "surface": "#111113",
+    "surface-raised": "#18181B",
+    "surface-overlay": "#1F1F23",
+    "border-subtle": "#27272A",
+    "border-default": "#3F3F46",
+    "border-strong": "#52525B",
+    "text-primary": "#FAFAFA",
+    "text-secondary": "#A1A1AA",
+    "text-tertiary": "#71717A",
+    "text-disabled": "#52525B",
+    "text-inverse": "#09090B",
+    "accent": "#3B82F6",
+    "accent-hover": "#60A5FA",
+    "accent-muted": "#1E3A5F",
+    "accent-subtle": "#172554",
+    "success": "#22C55E",
+    "success-muted": "#14532D",
+    "warning": "#F59E0B",
+    "warning-muted": "#78350F",
+    "danger": "#EF4444",
+    "danger-hover": "#F87171",
+    "danger-muted": "#7F1D1D",
+    "focus-ring": "#3B82F680",
+    "scrim": "#000000B3",
+    "toolbar": "#111113E6",
+    "viewport": "#000000"
+  },
+  "semantic": {
+    "background": {
+      "app": "{palette.canvas}",
+      "panel": "{palette.surface}",
+      "elevated": "{palette.surface-raised}",
+      "overlay": "{palette.surface-overlay}",
+      "viewport": "{palette.viewport}"
+    },
+    "foreground": {
+      "primary": "{palette.text-primary}",
+      "secondary": "{palette.text-secondary}",
+      "muted": "{palette.text-tertiary}",
+      "disabled": "{palette.text-disabled}"
+    },
+    "border": {
+      "subtle": "{palette.border-subtle}",
+      "default": "{palette.border-default}",
+      "strong": "{palette.border-strong}"
+    },
+    "interactive": {
+      "primary": "{palette.accent}",
+      "primary-hover": "{palette.accent-hover}",
+      "primary-muted": "{palette.accent-muted}",
+      "destructive": "{palette.danger}",
+      "destructive-hover": "{palette.danger-hover}"
+    }
+  }
+}

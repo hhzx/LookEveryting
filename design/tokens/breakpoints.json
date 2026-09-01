@@ -1,0 +1,36 @@
+{
+  "$schema": "./schema.json",
+  "meta": {
+    "name": "LookEveryting Breakpoints",
+    "version": "1.0.0"
+  },
+  "breakpoints": {
+    "compact": {
+      "max": 719,
+      "label": "Compact",
+      "description": "窄窗口 / 小屏 — 单栏 + 底部工具栏"
+    },
+    "comfortable": {
+      "min": 720,
+      "max": 1279,
+      "label": "Comfortable",
+      "description": "中等窗口 — 图标侧栏 + 抽屉面板"
+    },
+    "spacious": {
+      "min": 1280,
+      "label": "Spacious",
+      "description": "宽屏 — 完整三栏布局"
+    }
+  },
+  "density": {
+    "compact": 0.9,
+    "comfortable": 1.0,
+    "spacious": 1.0,
+    "accessibility": 1.15
+  },
+  "dpi": {
+    "follow-system": true,
+    "max-ui-scale": 1.5,
+    "min-ui-scale": 0.85
+  }
+}

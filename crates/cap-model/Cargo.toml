@@ -1,0 +1,14 @@
+[package]
+name = "cap-model"
+description = "3D model metadata and mesh preview for LookEveryting"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+cap-core = { path = "../cap-core" }
+gltf = "1.4"
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"

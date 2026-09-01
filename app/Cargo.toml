@@ -1,0 +1,29 @@
+[package]
+name = "look-everyting"
+description = "Local media viewer — images, video, and 3D models"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "LookEveryting"
+path = "src/main.rs"
+
+[dependencies]
+cap-core = { path = "../crates/cap-core" }
+cap-i18n = { path = "../crates/cap-i18n" }
+cap-image = { path = "../crates/cap-image" }
+cap-model = { path = "../crates/cap-model" }
+cap-ui = { path = "../crates/cap-ui" }
+cap-video = { path = "../crates/cap-video" }
+eframe.workspace = true
+egui.workspace = true
+rfd = "0.15"
+walkdir = "2"
+open = "5"
+
+[dev-dependencies]
+eframe.workspace = true
+egui.workspace = true
+image = { version = "0.25", features = ["png"] }
+tempfile = "3"
