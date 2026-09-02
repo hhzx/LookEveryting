@@ -177,8 +177,8 @@ fn sidebar(app: &mut LookApp, ui: &mut Ui, layout: LayoutMode) {
                 } else {
                     RichText::new(name).color(Semantic::FG_SECONDARY)
                 };
-                if ui.selectable_label(selected, text).clicked() {
-                    app.open_path(path.clone());
+                if ui.selectable_label(selected, text).clicked() && !selected {
+                    app.navigate_to_index(idx);
                 }
             }
         });
@@ -192,6 +192,7 @@ fn viewport(app: &mut LookApp, ui: &mut Ui) {
 
     if let Some(LoadedMedia::Image { texture, decoded }) = app.media.as_ref() {
         if let Some(tex) = texture.as_ref() {
+            paint_checkerboard(ui.painter(), rect);
             let img_size = vec2(decoded.width as f32, decoded.height as f32);
             let tex_id = tex.id();
             let _ = interact_image_viewport(app, ui, rect, img_size);
@@ -228,12 +229,22 @@ fn viewport(app: &mut LookApp, ui: &mut Ui) {
     match &mut app.media {
         None => empty_state(app, ui, rect),
         Some(LoadedMedia::Image { .. }) => {}
-        Some(LoadedMedia::Video { info, path, texture, playing, .. }) => {
+        Some(LoadedMedia::Video { info, path, texture, playing, player, .. }) => {
             let info = info.clone();
             let path = path.clone();
             let texture = texture.clone();
             let playing = *playing;
-            draw_video_view(app, ui, rect, &info, &path, texture.as_ref(), playing);
+            let player_ready = player.is_some();
+            draw_video_view(
+                app,
+                ui,
+                rect,
+                &info,
+                &path,
+                texture.as_ref(),
+                playing,
+                player_ready,
+            );
         }
         Some(LoadedMedia::Model {
             info,
@@ -275,6 +286,7 @@ fn draw_video_view(
     path: &std::path::Path,
     texture: Option<&egui::TextureHandle>,
     playing: bool,
+    player_ready: bool,
 ) {
     ui.painter().rect_filled(rect, 0.0, Color32::BLACK);
 
@@ -293,12 +305,20 @@ fn draw_video_view(
         );
     } else {
         let center = rect.center();
+        let (label, color) = if player_ready {
+            (app.i18n.t("video-loading"), Semantic::FG_MUTED)
+        } else {
+            (
+                app.error.as_deref().unwrap_or(app.i18n.t("video-failed")),
+                Palette::DANGER,
+            )
+        };
         ui.painter().text(
             center,
             Align2::CENTER_CENTER,
-            app.i18n.t("video-loading"),
+            label,
             egui::FontId::proportional(14.0),
-            Semantic::FG_MUTED,
+            color,
         );
     }
 
@@ -603,10 +623,16 @@ fn handle_shortcuts(app: &mut LookApp, ctx: &egui::Context) {
         if i.modifiers.ctrl && i.key_pressed(egui::Key::O) {
             open_file_dialog(app);
         }
-        if i.key_pressed(egui::Key::ArrowLeft) {
+        if i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::ArrowUp) {
             app.navigate(-1);
         }
-        if i.key_pressed(egui::Key::ArrowRight) {
+        if i.key_pressed(egui::Key::ArrowRight) || i.key_pressed(egui::Key::ArrowDown) {
+            app.navigate(1);
+        }
+        if i.key_pressed(egui::Key::PageUp) {
+            app.navigate(-1);
+        }
+        if i.key_pressed(egui::Key::PageDown) {
             app.navigate(1);
         }
         if i.key_pressed(egui::Key::Home) && !app.folder_files.is_empty() {
@@ -614,6 +640,9 @@ fn handle_shortcuts(app: &mut LookApp, ctx: &egui::Context) {
         }
         if i.key_pressed(egui::Key::End) && !app.folder_files.is_empty() {
             app.navigate_to_index(app.folder_files.len() - 1);
+        }
+        if matches!(&app.media, Some(LoadedMedia::Video { .. })) && i.key_pressed(egui::Key::Space) {
+            app.toggle_video_playback();
         }
         if i.key_pressed(egui::Key::I) {
             app.info_open = !app.info_open;
@@ -650,4 +679,23 @@ fn handle_shortcuts(app: &mut LookApp, ctx: &egui::Context) {
             app.settings_open = !app.settings_open;
         }
     });
+}
+
+fn paint_checkerboard(painter: &egui::Painter, rect: egui::Rect) {
+    let cell = 12.0;
+    let light = Color32::from_rgb(0x2A, 0x2D, 0x35);
+    let dark = Color32::from_rgb(0x22, 0x25, 0x2C);
+    let cols = (rect.width() / cell).ceil() as i32;
+    let rows = (rect.height() / cell).ceil() as i32;
+    for row in 0..rows {
+        for col in 0..cols {
+            let color = if (row + col) % 2 == 0 { light } else { dark };
+            let min = rect.min + vec2(col as f32 * cell, row as f32 * cell);
+            let size = vec2(
+                cell.min(rect.right() - min.x),
+                cell.min(rect.bottom() - min.y),
+            );
+            painter.rect_filled(egui::Rect::from_min_size(min, size), 0.0, color);
+        }
+    }
 }

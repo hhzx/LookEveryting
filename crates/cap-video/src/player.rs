@@ -150,18 +150,13 @@ mod mf {
                 MFStartup(MF_VERSION, MFSTARTUP_LITE)
                     .map_err(|e| PlayerError::Message(e.to_string()))?;
 
-                let wide: Vec<u16> = path
-                    .canonicalize()
-                    .unwrap_or_else(|_| path.to_path_buf())
-                    .to_string_lossy()
-                    .encode_utf16()
-                    .chain(std::iter::once(0))
-                    .collect();
+                let wide = path_to_file_url(path)?;
 
                 let reader = MFCreateSourceReaderFromURL(PCWSTR(wide.as_ptr()), None)
-                    .map_err(|e| PlayerError::Message(e.to_string()))?;
+                    .map_err(|e| PlayerError::Message(format!("open video: {e}")))?;
 
-                let out_type = MFCreateMediaType().map_err(|e| PlayerError::Message(e.to_string()))?;
+                let out_type =
+                    MFCreateMediaType().map_err(|e| PlayerError::Message(e.to_string()))?;
                 out_type
                     .SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)
                     .map_err(|e| PlayerError::Message(e.to_string()))?;
@@ -179,27 +174,8 @@ mod mf {
                 let native = reader
                     .GetNativeMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32, 0)
                     .map_err(|e| PlayerError::Message(e.to_string()))?;
-                let frame_size = native.GetUINT64(&MF_MT_FRAME_SIZE).unwrap_or(0);
-                let width = (frame_size & 0xFFFF_FFFF) as u32;
-                let height = (frame_size >> 32) as u32;
-                let fps = native
-                    .GetUINT64(&MF_MT_FRAME_RATE)
-                    .map(|v| {
-                        let num = (v >> 32) as f32;
-                        let den = (v & 0xFFFF_FFFF) as f32;
-                        if den > 0.0 {
-                            (num / den).max(24.0)
-                        } else {
-                            30.0
-                        }
-                    })
-                    .unwrap_or(30.0);
-
-                let (w, h) = if width > 0 && height > 0 {
-                    (width, height)
-                } else {
-                    (1280, 720)
-                };
+                let (w, h) = frame_size_from_type(&native);
+                let fps = fps_from_type(&native);
 
                 let mut player = Self {
                     reader,
@@ -239,33 +215,50 @@ mod mf {
 
         fn read_frame_into_current(&mut self) -> Result<(), PlayerError> {
             unsafe {
-                let mut flags = 0u32;
-                let mut sample = None;
-                self.reader
-                    .ReadSample(
-                        MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32,
-                        0,
-                        None,
-                        Some(&mut flags),
-                        None,
-                        Some(&mut sample),
-                    )
-                    .map_err(|e| PlayerError::Message(e.to_string()))?;
+                const MAX_ATTEMPTS: u32 = 32;
+                let stream = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32;
 
-                if flags & MF_SOURCE_READERF_ENDOFSTREAM.0 as u32 != 0 {
-                    return Err(PlayerError::Message("end of stream".into()));
+                for _ in 0..MAX_ATTEMPTS {
+                    let mut flags = 0u32;
+                    let mut sample = None;
+                    self.reader
+                        .ReadSample(stream, 0, None, Some(&mut flags), None, Some(&mut sample))
+                        .map_err(|e| PlayerError::Message(e.to_string()))?;
+
+                    if flags & MF_SOURCE_READERF_ENDOFSTREAM.0 as u32 != 0 {
+                        return Err(PlayerError::Message("end of stream".into()));
+                    }
+
+                    if flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED.0 as u32 != 0 {
+                        if let Ok(media_type) = self.reader.GetCurrentMediaType(stream) {
+                            let (w, h) = frame_size_from_type(&media_type);
+                            if w > 0 && h > 0 {
+                                self.width = w;
+                                self.height = h;
+                            }
+                        }
+                        continue;
+                    }
+
+                    let Some(sample) = sample else {
+                        continue;
+                    };
+
+                    return self.decode_sample(&sample);
                 }
 
-                let Some(sample) = sample else {
-                    return Err(PlayerError::Message("no video sample".into()));
-                };
+                Err(PlayerError::Message("no video frame after read loop".into()))
+            }
+        }
 
+        fn decode_sample(&mut self, sample: &IMFSample) -> Result<(), PlayerError> {
+            unsafe {
                 let buffer = sample
                     .ConvertToContiguousBuffer()
                     .map_err(|e| PlayerError::Message(e.to_string()))?;
 
-                let w = self.width;
-                let h = self.height;
+                let w = self.width.max(1);
+                let h = self.height.max(1);
                 let mut rgba = vec![0u8; (w * h * 4) as usize];
 
                 if let Ok(buf2d) = buffer.cast::<IMF2DBuffer>() {
@@ -279,7 +272,11 @@ mod mf {
                     for row in 0..h as usize {
                         let src = scan0.add(row * pitch);
                         let dst_start = row * row_bytes;
-                        std::ptr::copy_nonoverlapping(src, rgba.as_mut_ptr().add(dst_start), row_bytes);
+                        std::ptr::copy_nonoverlapping(
+                            src,
+                            rgba.as_mut_ptr().add(dst_start),
+                            row_bytes,
+                        );
                     }
                     buf2d.Unlock2D().ok();
                 } else {
@@ -287,7 +284,9 @@ mod mf {
                     buffer
                         .Lock(&mut data, None, None)
                         .map_err(|e| PlayerError::Message(e.to_string()))?;
-                    let len = buffer.GetCurrentLength().map_err(|e| PlayerError::Message(e.to_string()))?
+                    let len = buffer
+                        .GetCurrentLength()
+                        .map_err(|e| PlayerError::Message(e.to_string()))?
                         as usize;
                     let slice = std::slice::from_raw_parts(data, len);
                     let stride = MFGetStrideForBitmapInfoHeader(32, w)
@@ -297,7 +296,9 @@ mod mf {
                     for row in 0..h as usize {
                         let src_start = row * stride;
                         let dst_start = row * row_bytes;
-                        if src_start + row_bytes <= slice.len() && dst_start + row_bytes <= rgba.len() {
+                        if src_start + row_bytes <= slice.len()
+                            && dst_start + row_bytes <= rgba.len()
+                        {
                             rgba[dst_start..dst_start + row_bytes]
                                 .copy_from_slice(&slice[src_start..src_start + row_bytes]);
                         }
@@ -305,7 +306,6 @@ mod mf {
                     buffer.Unlock().ok();
                 }
 
-                // BGRA -> RGBA
                 for px in rgba.chunks_exact_mut(4) {
                     px.swap(0, 2);
                 }
@@ -317,6 +317,50 @@ mod mf {
                 });
                 Ok(())
             }
+        }
+    }
+
+    fn path_to_file_url(path: &Path) -> Result<Vec<u16>, PlayerError> {
+        let path = path
+            .canonicalize()
+            .unwrap_or_else(|_| path.to_path_buf());
+        let mut text = path.to_string_lossy().to_string();
+        if let Some(stripped) = text.strip_prefix(r"\\?\") {
+            text = stripped.to_string();
+        }
+        let url = if text.starts_with("//") {
+            format!("file:{text}")
+        } else {
+            format!("file:///{}", text.replace('\\', "/"))
+        };
+        Ok(url.encode_utf16().chain(std::iter::once(0)).collect())
+    }
+
+    fn frame_size_from_type(media_type: &IMFMediaType) -> (u32, u32) {
+        let frame_size = unsafe { media_type.GetUINT64(&MF_MT_FRAME_SIZE).unwrap_or(0) };
+        let width = (frame_size & 0xFFFF_FFFF) as u32;
+        let height = (frame_size >> 32) as u32;
+        if width > 0 && height > 0 {
+            (width, height)
+        } else {
+            (1280, 720)
+        }
+    }
+
+    fn fps_from_type(media_type: &IMFMediaType) -> f32 {
+        unsafe {
+            media_type
+                .GetUINT64(&MF_MT_FRAME_RATE)
+                .map(|v| {
+                    let num = (v >> 32) as f32;
+                    let den = (v & 0xFFFF_FFFF) as f32;
+                    if den > 0.0 {
+                        (num / den).max(24.0)
+                    } else {
+                        30.0
+                    }
+                })
+                .unwrap_or(30.0)
         }
     }
 }

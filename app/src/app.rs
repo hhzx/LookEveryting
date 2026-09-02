@@ -104,6 +104,9 @@ impl LookApp {
     }
 
     pub fn open_path(&mut self, path: PathBuf) {
+        if self.current_path.as_ref() == Some(&path) {
+            return;
+        }
         self.touch();
         self.error = None;
 
@@ -129,19 +132,20 @@ impl LookApp {
                 Err(err) => self.error = Some(err.to_string()),
             },
             Some(MediaKind::Video) => match VideoInfo::from_path(&path) {
-                Ok(info) => {
-                    let player = VideoPlayer::open(path.clone()).ok();
-                    let playing = false;
-                    self.media = Some(LoadedMedia::Video {
-                        info,
-                        path: path.clone(),
-                        player,
-                        texture: None,
-                        playing,
-                    });
-                    self.current_path = Some(path);
-                    self.viewer_mode = ViewerMode::Viewer;
-                }
+                Ok(info) => match VideoPlayer::open(path.clone()) {
+                    Ok(player) => {
+                        self.media = Some(LoadedMedia::Video {
+                            info,
+                            path: path.clone(),
+                            player: Some(player),
+                            texture: None,
+                            playing: false,
+                        });
+                        self.current_path = Some(path);
+                        self.viewer_mode = ViewerMode::Viewer;
+                    }
+                    Err(err) => self.error = Some(err.to_string()),
+                },
                 Err(err) => self.error = Some(err.to_string()),
             },
             Some(MediaKind::Model) => match ModelInfo::from_path(&path) {
@@ -239,52 +243,47 @@ impl LookApp {
 
     pub fn tick_video(&mut self, ctx: &egui::Context) {
         let mut frame = None;
-        if let Some(LoadedMedia::Video { player, playing, .. }) = &mut self.media {
+        let mut needs_texture = false;
+        if let Some(LoadedMedia::Video { player, playing, texture, .. }) = &mut self.media {
+            needs_texture = texture.is_none();
             if let Some(player) = player {
                 if *playing {
                     frame = player.tick();
-                } else if player.current_frame().is_none() {
-                    frame = player.seek_start();
+                } else if needs_texture {
+                    frame = player
+                        .current_frame()
+                        .cloned()
+                        .or_else(|| player.seek_start());
                 }
             }
         }
         if let Some(frame) = frame {
-            if let Some(LoadedMedia::Video { texture, .. }) = &mut self.media {
-                let image = ColorImage::from_rgba_unmultiplied(
-                    [frame.width as usize, frame.height as usize],
-                    &frame.rgba,
-                );
-                let handle = ctx.load_texture(
-                    format!("video-{}", self.current_index),
-                    image,
-                    egui::TextureOptions::LINEAR,
-                );
-                *texture = Some(handle);
-            }
+            self.upload_video_texture(ctx, &frame);
             ctx.request_repaint();
         }
     }
 
+    fn upload_video_texture(&mut self, ctx: &egui::Context, frame: &cap_video::VideoFrame) {
+        if let Some(LoadedMedia::Video { texture, .. }) = &mut self.media {
+            let image = ColorImage::from_rgba_unmultiplied(
+                [frame.width as usize, frame.height as usize],
+                &frame.rgba,
+            );
+            let handle = ctx.load_texture(
+                format!("video-{}", self.current_index),
+                image,
+                egui::TextureOptions::LINEAR,
+            );
+            *texture = Some(handle);
+        }
+    }
+
     fn ensure_video_texture(&mut self, ctx: &egui::Context) {
-        if let Some(LoadedMedia::Video {
-            player,
-            texture,
-            ..
-        }) = &mut self.media
-        {
+        if let Some(LoadedMedia::Video { player, texture, .. }) = &mut self.media {
             if texture.is_none() {
                 if let Some(player) = player {
-                    if let Some(frame) = player.seek_start() {
-                        let image = ColorImage::from_rgba_unmultiplied(
-                            [frame.width as usize, frame.height as usize],
-                            &frame.rgba,
-                        );
-                        let handle = ctx.load_texture(
-                            "video-preview",
-                            image,
-                            egui::TextureOptions::LINEAR,
-                        );
-                        *texture = Some(handle);
+                    if let Some(frame) = player.current_frame().cloned() {
+                        self.upload_video_texture(ctx, &frame);
                     }
                 }
             }

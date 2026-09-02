@@ -1,8 +1,18 @@
 //! System and bundled CJK font loading for egui.
 
+use std::path::Path;
+
 use egui::{Context, FontData, FontDefinitions, FontFamily};
 
 const CJK_FONT_ID: &str = "cjk";
+
+const BUNDLED_FONT_NAMES: &[&str] = &[
+    "NotoSansSC-Regular.otf",
+    "NotoSansSC-Regular.ttf",
+    "msyh.ttc",
+    "msyhbd.ttc",
+    "simhei.ttf",
+];
 
 /// Install fonts with CJK fallback into the egui context. Call once at startup.
 pub fn install(ctx: &Context) {
@@ -15,7 +25,9 @@ pub fn install(ctx: &Context) {
     let mut font_data = FontData::from_owned(bytes);
     font_data.index = 0;
 
-    fonts.font_data.insert(CJK_FONT_ID.to_owned(), font_data.into());
+    fonts
+        .font_data
+        .insert(CJK_FONT_ID.to_owned(), font_data.into());
 
     for family in [FontFamily::Proportional, FontFamily::Monospace] {
         fonts
@@ -29,10 +41,27 @@ pub fn install(ctx: &Context) {
 }
 
 fn load_cjk_font_bytes() -> Option<Vec<u8>> {
-    for path in system_cjk_font_paths() {
+    bundled_font_from_exe_dir()
+        .or_else(|| read_first_existing(&system_cjk_font_paths()))
+}
+
+fn bundled_font_from_exe_dir() -> Option<Vec<u8>> {
+    let exe = std::env::current_exe().ok()?;
+    let font_dir = exe.parent()?.join("fonts");
+    let mut paths = Vec::new();
+    for name in BUNDLED_FONT_NAMES {
+        paths.push(font_dir.join(name));
+    }
+    read_first_existing(&paths)
+}
+
+fn read_first_existing(paths: &[std::path::PathBuf]) -> Option<Vec<u8>> {
+    for path in paths {
         if path.exists() {
-            if let Ok(bytes) = std::fs::read(&path) {
-                return Some(bytes);
+            if let Ok(bytes) = std::fs::read(path) {
+                if !bytes.is_empty() {
+                    return Some(bytes);
+                }
             }
         }
     }
@@ -43,7 +72,7 @@ fn system_cjk_font_paths() -> Vec<std::path::PathBuf> {
     #[cfg(target_os = "windows")]
     {
         let windir = std::env::var_os("WINDIR").unwrap_or_else(|| "C:\\Windows".into());
-        let fonts = std::path::Path::new(&windir).join("Fonts");
+        let fonts = Path::new(&windir).join("Fonts");
         [
             "msyh.ttc",
             "msyhbd.ttc",
@@ -90,6 +119,16 @@ fn system_cjk_font_paths() -> Vec<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bundled_font_paths_are_relative_to_exe_dir() {
+        let dir = std::path::Path::new("C:\\app");
+        let expected = dir.join("fonts").join("msyh.ttc");
+        assert_eq!(
+            expected,
+            std::path::PathBuf::from(r"C:\app\fonts\msyh.ttc")
+        );
+    }
 
     #[test]
     fn finds_system_cjk_font_on_supported_platforms() {
