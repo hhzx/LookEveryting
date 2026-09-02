@@ -14,8 +14,10 @@ cap-core = { path = "../crates/cap-core" }
 cap-i18n = { path = "../crates/cap-i18n" }
 cap-image = { path = "../crates/cap-image" }
 cap-model = { path = "../crates/cap-model" }
+cap-shell = { path = "../crates/cap-shell" }
 cap-ui = { path = "../crates/cap-ui" }
 cap-video = { path = "../crates/cap-video" }
+cap-viewer = { path = "../crates/cap-viewer" }
 eframe.workspace = true
 egui.workspace = true
 rfd = "0.15"

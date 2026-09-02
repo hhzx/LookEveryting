@@ -1,9 +1,13 @@
-//! Parse 3D model metadata for display in the info panel.
+//! Parse 3D model metadata and geometry for viewing.
+
+mod mesh;
 
 use std::path::Path;
 
 use cap_core::MediaKind;
 use thiserror::Error;
+
+pub use mesh::{load_mesh, Bounds, MeshData};
 
 #[derive(Debug, Error)]
 pub enum ModelError {
@@ -13,6 +17,8 @@ pub enum ModelError {
     Io(#[from] std::io::Error),
     #[error("parse error: {0}")]
     Parse(#[from] gltf::Error),
+    #[error("{0}")]
+    Message(String),
 }
 
 /// Summary information about a 3D asset.
@@ -37,66 +43,60 @@ impl ModelInfo {
             .ok_or(ModelError::UnsupportedFormat)?;
 
         match ext.as_str() {
-            "glb" | "gltf" => parse_gltf(path, &ext),
-            "obj" | "stl" | "fbx" | "ply" | "dae" | "3mf" => Ok(basic_stub(&ext, path)),
+            "glb" | "gltf" => parse_gltf_meta(path, &ext),
+            "obj" | "stl" | "fbx" | "ply" | "dae" | "3mf" | "max" => {
+                if ext == "max" {
+                    return Ok(ModelInfo {
+                        format: "MAX".to_string(),
+                        notes: "3ds Max (.max) is proprietary. Export to FBX, OBJ, or GLTF to preview."
+                            .to_string(),
+                        ..Default::default()
+                    });
+                }
+                match load_mesh(path) {
+                    Ok(mesh) => Ok(info_from_mesh(&ext, &mesh)),
+                    Err(ModelError::Message(msg)) => Ok(ModelInfo {
+                        format: ext.to_ascii_uppercase(),
+                        notes: msg,
+                        ..Default::default()
+                    }),
+                    Err(err) => Err(err),
+                }
+            }
             _ => Err(ModelError::UnsupportedFormat),
         }
     }
 }
 
-fn parse_gltf(path: &Path, ext: &str) -> Result<ModelInfo, ModelError> {
+pub fn info_from_mesh(ext: &str, mesh: &MeshData) -> ModelInfo {
+    let triangle_count = if mesh.indices.is_empty() {
+        mesh.vertices.len() / 3
+    } else {
+        mesh.indices.len() / 3
+    };
+    ModelInfo {
+        format: ext.to_ascii_uppercase(),
+        mesh_count: 1,
+        vertex_count: mesh.vertices.len(),
+        triangle_count,
+        notes: "Loaded for in-app preview.".to_string(),
+        ..Default::default()
+    }
+}
+
+fn parse_gltf_meta(path: &Path, ext: &str) -> Result<ModelInfo, ModelError> {
     if cap_core::classify_extension(path) != Some(MediaKind::Model) {
         return Err(ModelError::UnsupportedFormat);
     }
 
-    let (document, buffers, _images) = gltf::import(path)?;
-
-    let mut vertex_count = 0usize;
-    let mut triangle_count = 0usize;
-
-    for mesh in document.meshes() {
-        for primitive in mesh.primitives() {
-            let reader = primitive.reader(|buffer| {
-                buffers
-                    .get(buffer.index())
-                    .map(|data| data.0.as_slice())
-            });
-            if let Some(iter) = reader.read_positions() {
-                vertex_count += iter.count();
-            }
-            if let Some(indices) = reader.read_indices() {
-                triangle_count += indices.into_u32().count() / 3;
-            } else if let Some(iter) = reader.read_positions() {
-                triangle_count += iter.count() / 3;
-            }
-        }
-    }
-
-    let has_textures = document.textures().next().is_some() || document.images().next().is_some();
-
-    Ok(ModelInfo {
-        format: ext.to_ascii_uppercase(),
-        mesh_count: document.meshes().count(),
-        material_count: document.materials().count(),
-        node_count: document.nodes().count(),
-        vertex_count,
-        triangle_count,
-        has_textures,
-        notes: "GLTF metadata parsed successfully.".to_string(),
-    })
-}
-
-fn basic_stub(ext: &str, path: &Path) -> ModelInfo {
-    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    ModelInfo {
-        format: ext.to_ascii_uppercase(),
-        notes: format!(
-            "{} file ({} KB). Use Open to view in your system 3D application.",
-            ext.to_ascii_uppercase(),
-            size / 1024
-        ),
-        ..Default::default()
-    }
+    let mesh = load_mesh(path)?;
+    let mut info = info_from_mesh(ext, &mesh);
+    let (document, _, _) = gltf::import(path)?;
+    info.material_count = document.materials().count();
+    info.node_count = document.nodes().count();
+    info.has_textures =
+        document.textures().next().is_some() || document.images().next().is_some();
+    Ok(info)
 }
 
 #[cfg(test)]
@@ -113,11 +113,11 @@ mod tests {
     }
 
     #[test]
-    fn stub_for_obj() {
+    fn stub_for_max() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("cube.obj");
-        std::fs::write(&path, b"v 0 0 0").unwrap();
+        let path = dir.path().join("scene.max");
+        std::fs::write(&path, b"data").unwrap();
         let info = ModelInfo::from_path(&path).unwrap();
-        assert_eq!(info.format, "OBJ");
+        assert_eq!(info.format, "MAX");
     }
 }

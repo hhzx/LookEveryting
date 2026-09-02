@@ -38,6 +38,8 @@ pub mod component {
     pub const INFO_PANEL_WIDTH: f32 = 280.0;
     pub const DRAWER_WIDTH: f32 = 320.0;
     pub const THUMBNAIL_SIZE: f32 = 120.0;
+    pub const THUMBNAIL_STRIP_SIZE: f32 = 96.0;
+    pub const THUMBNAIL_STRIP_HEIGHT: f32 = 120.0;
     pub const THUMBNAIL_GAP: f32 = 8.0;
     pub const ICON_BUTTON: f32 = 32.0;
     pub const ICON_BUTTON_SM: f32 = 28.0;

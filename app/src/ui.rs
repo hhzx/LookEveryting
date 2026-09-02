@@ -6,16 +6,22 @@ use cap_ui::colors::{Palette, Semantic};
 use cap_ui::layout::LayoutMode;
 use cap_ui::spacing::{component, space};
 use cap_ui::widgets::{ghost_button, icon_button, paint_floating_panel, panel_frame, titlebar_frame};
-use egui::{pos2, vec2, Align2, Color32, Frame, RichText, Sense, Ui};
+use cap_viewer::draw_mesh_viewport;
+use egui::{pos2, vec2, Align2, Color32, Frame, RichText, Sense, Ui, Vec2};
 
 use crate::app::{LoadedMedia, LookApp};
+use crate::image_viewport::interact_image_viewport;
+use crate::thumbnails::{draw_thumbnail_strip, ensure_thumbnails};
 
 pub fn draw(app: &mut LookApp, ctx: &egui::Context) {
     app.maybe_hide_toolbar();
     app.ensure_texture(ctx);
+    app.tick_video(ctx);
+    ensure_thumbnails(app, ctx);
 
     let screen = ctx.screen_rect();
     let layout = app.layout_mode(screen.width());
+    let show_strip = !app.folder_files.is_empty();
 
     egui::TopBottomPanel::top("titlebar")
         .exact_height(component::TITLEBAR_HEIGHT)
@@ -44,13 +50,34 @@ pub fn draw(app: &mut LookApp, ctx: &egui::Context) {
 
     egui::CentralPanel::default()
         .frame(Frame::NONE.fill(Semantic::BG_VIEWPORT))
-        .show(ctx, |ui| viewport(app, ui));
+        .show(ctx, |ui| {
+            viewport(app, ui);
+            if app.toolbar_visible {
+                draw_floating_toolbar_overlay(app, ui);
+            }
+        });
 
-    if app.toolbar_visible {
-        egui::TopBottomPanel::bottom("toolbar")
-            .exact_height(component::TOOLBAR_HEIGHT + component::FLOATING_TOOLBAR_MARGIN * 2.0)
-            .frame(Frame::NONE)
-            .show(ctx, |ui| floating_toolbar(app, ui));
+    if show_strip {
+        egui::TopBottomPanel::bottom("thumbnails")
+            .exact_height(component::THUMBNAIL_STRIP_HEIGHT)
+            .frame(panel_frame(Palette::SURFACE))
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new(app.i18n.t("browse-thumbnails"))
+                        .size(11.0)
+                        .color(Semantic::FG_MUTED),
+                );
+                let strip_h = component::THUMBNAIL_STRIP_SIZE + 4.0;
+                ui.set_height(strip_h);
+                egui::ScrollArea::horizontal()
+                    .id_salt("thumb_scroll")
+                    .auto_shrink([false; 2])
+                    .max_height(strip_h)
+                    .show(ui, |ui| {
+                        ui.set_height(strip_h);
+                        draw_thumbnail_strip(app, ui);
+                    });
+            });
     }
 
     if app.info_open && layout != LayoutMode::Spacious {
@@ -82,6 +109,7 @@ pub fn draw(app: &mut LookApp, ctx: &egui::Context) {
     }
 
     handle_shortcuts(app, ctx);
+    handle_dropped_files(app, ctx);
 }
 
 fn title_bar(app: &mut LookApp, ui: &mut Ui) {
@@ -162,65 +190,162 @@ fn viewport(app: &mut LookApp, ui: &mut Ui) {
     ui.painter()
         .rect_filled(rect, 0.0, Semantic::BG_VIEWPORT);
 
-    match &app.media {
-        None => empty_state(app, ui, rect),
-        Some(LoadedMedia::Image { texture, decoded }) => {
-            if let Some(tex) = texture {
-                let avail = rect.size();
-                let img_size = vec2(decoded.width as f32, decoded.height as f32);
-                let scale = if app.fit_mode {
-                    (avail.x / img_size.x).min(avail.y / img_size.y)
-                } else {
-                    app.zoom
-                };
-                let size = img_size * scale;
-                let center = rect.center() + app.pan;
-                let img_rect = egui::Rect::from_center_size(center, size);
-                ui.put(
-                    img_rect,
-                    egui::Image::new(tex).fit_to_exact_size(size).sense(Sense::drag()),
-                );
-                if ui.ui_contains_pointer() && ui.input(|i| i.pointer.any_pressed()) {
-                    app.touch();
-                }
-            }
-        }
-        Some(LoadedMedia::Video { info, path }) => {
-            draw_placeholder(
-                ui,
-                rect,
-                app.i18n.t("mode-video"),
-                &format!(
-                    "{} · {}\n{}",
-                    info.format,
-                    info.file_size_label(),
-                    path.display()
-                ),
-                Palette::ACCENT,
+    if let Some(LoadedMedia::Image { texture, decoded }) = app.media.as_ref() {
+        if let Some(tex) = texture.as_ref() {
+            let img_size = vec2(decoded.width as f32, decoded.height as f32);
+            let tex_id = tex.id();
+            let _ = interact_image_viewport(app, ui, rect, img_size);
+            let scale = app.display_scale(rect.size(), img_size);
+            let size = img_size * scale;
+            let center = rect.center() + app.pan;
+            let img_rect = egui::Rect::from_center_size(center, size);
+            ui.painter().image(
+                tex_id,
+                img_rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                Color32::WHITE,
             );
-        }
-        Some(LoadedMedia::Model { info, path, wireframe }) => {
-            let mode = if *wireframe {
-                app.i18n.t("model-wireframe")
-            } else {
-                app.i18n.t("model-solid")
-            };
-            draw_placeholder(
-                ui,
-                rect,
-                app.i18n.t("mode-model"),
-                &format!(
-                    "{} · {} · {}\n{} triangles\n{}",
-                    info.format,
-                    mode,
-                    path.file_name().and_then(|n| n.to_str()).unwrap_or(""),
-                    info.triangle_count,
-                    info.notes
-                ),
-                Color32::from_rgb(0x22, 0xC5, 0x5E),
+
+            let pct = (scale * 100.0).round();
+            ui.painter().text(
+                rect.left_top() + vec2(12.0, 8.0),
+                Align2::LEFT_TOP,
+                format!("{pct:.0}%"),
+                egui::FontId::monospace(11.0),
+                Semantic::FG_MUTED,
             );
+            ui.painter().text(
+                rect.left_bottom() + vec2(12.0, -12.0),
+                Align2::LEFT_BOTTOM,
+                "滚轮缩放 · 中键/放大后左键拖拽 · 双击适应 · 0/1/F/R",
+                egui::FontId::proportional(11.0),
+                Semantic::FG_MUTED,
+            );
+            return;
         }
     }
+
+    match &mut app.media {
+        None => empty_state(app, ui, rect),
+        Some(LoadedMedia::Image { .. }) => {}
+        Some(LoadedMedia::Video { info, path, texture, playing, .. }) => {
+            let info = info.clone();
+            let path = path.clone();
+            let texture = texture.clone();
+            let playing = *playing;
+            draw_video_view(app, ui, rect, &info, &path, texture.as_ref(), playing);
+        }
+        Some(LoadedMedia::Model {
+            info,
+            path,
+            wireframe,
+            mesh,
+            camera,
+        }) => {
+            if let Some(mesh) = mesh.as_ref() {
+                draw_mesh_viewport(ui, rect, mesh, camera, *wireframe);
+                let hint = app.i18n.t("model-hint");
+                ui.painter().text(
+                    rect.left_bottom() + vec2(12.0, -8.0),
+                    Align2::LEFT_BOTTOM,
+                    hint,
+                    egui::FontId::proportional(11.0),
+                    Semantic::FG_MUTED,
+                );
+            } else {
+                let info = info.clone();
+                let path = path.clone();
+                draw_placeholder(
+                    ui,
+                    rect,
+                    app.i18n.t("mode-model"),
+                    &format!("{}\n{}\n{}", info.format, info.notes, path.display()),
+                    Color32::from_rgb(0x22, 0xC5, 0x5E),
+                );
+            }
+        }
+    }
+}
+
+fn draw_video_view(
+    app: &mut LookApp,
+    ui: &mut Ui,
+    rect: egui::Rect,
+    info: &cap_video::VideoInfo,
+    path: &std::path::Path,
+    texture: Option<&egui::TextureHandle>,
+    playing: bool,
+) {
+    ui.painter().rect_filled(rect, 0.0, Color32::BLACK);
+
+    if let Some(tex) = texture {
+        let avail = rect.size();
+        let [tw, th] = tex.size();
+        let img_size = vec2(tw as f32, th as f32);
+        let scale = (avail.x / img_size.x).min(avail.y / img_size.y);
+        let size = img_size * scale;
+        let img_rect = egui::Rect::from_center_size(rect.center(), size);
+        ui.painter().image(
+            tex.id(),
+            img_rect,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            Color32::WHITE,
+        );
+    } else {
+        let center = rect.center();
+        ui.painter().text(
+            center,
+            Align2::CENTER_CENTER,
+            app.i18n.t("video-loading"),
+            egui::FontId::proportional(14.0),
+            Semantic::FG_MUTED,
+        );
+    }
+
+    let controls_y = rect.bottom() - 48.0;
+    let play_label = if playing {
+        app.i18n.t("video-pause").to_string()
+    } else {
+        app.i18n.t("video-play").to_string()
+    };
+    let btn_rect = egui::Rect::from_center_size(
+        egui::pos2(rect.center().x, controls_y),
+        vec2(120.0, 32.0),
+    );
+    let resp = ui.allocate_rect(btn_rect, Sense::click());
+    if resp.clicked() {
+        app.toggle_video_playback();
+    }
+    if ui.is_rect_visible(btn_rect) {
+        let bg = if resp.hovered() {
+            Palette::SURFACE_RAISED
+        } else {
+            Palette::ACCENT_MUTED
+        };
+        ui.painter().rect_filled(btn_rect, 6.0, bg);
+        ui.painter().text(
+            btn_rect.center(),
+            Align2::CENTER_CENTER,
+            &play_label,
+            egui::FontId::proportional(14.0),
+            Semantic::FG_PRIMARY,
+        );
+    }
+
+    ui.painter().text(
+        rect.left_top() + vec2(12.0, 8.0),
+        Align2::LEFT_TOP,
+        format!("{} · {}", info.format, info.file_size_label()),
+        egui::FontId::monospace(11.0),
+        Semantic::FG_MUTED,
+    );
+    ui.painter().text(
+        rect.left_bottom() + vec2(12.0, -8.0),
+        Align2::LEFT_BOTTOM,
+        path.display().to_string(),
+        egui::FontId::monospace(11.0),
+        Semantic::FG_MUTED,
+    );
 }
 
 fn empty_state(app: &mut LookApp, ui: &mut Ui, rect: egui::Rect) {
@@ -247,16 +372,18 @@ fn empty_state(app: &mut LookApp, ui: &mut Ui, rect: egui::Rect) {
             }
         });
     });
+}
 
-    ui.ctx().input(|i| {
-        if !i.raw.dropped_files.is_empty() {
-            if let Some(file) = i.raw.dropped_files.first() {
-                if let Some(path) = &file.path {
-                    app.open_path(path.clone());
-                }
-            }
-        }
+fn handle_dropped_files(app: &mut LookApp, ctx: &egui::Context) {
+    let paths: Vec<std::path::PathBuf> = ctx.input(|i| {
+        i.raw.dropped_files
+            .iter()
+            .filter_map(|f| f.path.clone())
+            .collect()
     });
+    if let Some(path) = paths.into_iter().next() {
+        app.open_path(path);
+    }
 }
 
 fn draw_placeholder(ui: &mut Ui, rect: egui::Rect, title: &str, body: &str, accent: Color32) {
@@ -277,89 +404,90 @@ fn draw_placeholder(ui: &mut Ui, rect: egui::Rect, title: &str, body: &str, acce
     );
 }
 
-fn floating_toolbar(app: &mut LookApp, ui: &mut Ui) {
-    let width = ui.available_width() - component::FLOATING_TOOLBAR_MARGIN * 2.0;
-    let bar_size = vec2(width, component::TOOLBAR_HEIGHT);
-    let (rect, _) = ui.allocate_exact_size(
-        vec2(ui.available_width(), bar_size.y + component::FLOATING_TOOLBAR_MARGIN),
-        Sense::hover(),
-    );
+fn draw_floating_toolbar_overlay(app: &mut LookApp, ui: &mut Ui) {
+    let parent = ui.max_rect();
+    let width = parent.width() - component::FLOATING_TOOLBAR_MARGIN * 2.0;
+    let bar_size = vec2(width.max(200.0), component::TOOLBAR_HEIGHT);
     let bar_rect = egui::Rect::from_min_size(
         pos2(
-            rect.left() + component::FLOATING_TOOLBAR_MARGIN,
-            rect.bottom() - component::TOOLBAR_HEIGHT - component::FLOATING_TOOLBAR_MARGIN,
+            parent.left() + component::FLOATING_TOOLBAR_MARGIN,
+            parent.bottom() - component::TOOLBAR_HEIGHT - component::FLOATING_TOOLBAR_MARGIN,
         ),
         bar_size,
     );
     paint_floating_panel(ui, bar_rect);
+    ui.allocate_ui_at_rect(bar_rect, |ui| floating_toolbar(app, ui, parent.size()));
+}
 
-    ui.allocate_ui_at_rect(bar_rect, |ui| {
-        ui.horizontal_centered(|ui| {
-            if icon_button(ui, "◀", app.i18n.t("toolbar-prev")).clicked() {
-                app.navigate(-1);
-            }
-            if icon_button(ui, "▶", app.i18n.t("toolbar-next")).clicked() {
-                app.navigate(1);
-            }
-            ui.label(
-                RichText::new(app.counter_label())
-                    .color(Semantic::FG_MUTED)
-                    .size(12.0),
-            );
-            ui.separator();
-            match &app.media {
-                Some(LoadedMedia::Image { .. }) => {
-                    if icon_button(ui, "Fit", app.i18n.t("toolbar-fit")).clicked() {
-                        app.fit_mode = true;
-                        app.touch();
-                    }
-                    if icon_button(ui, "1:1", app.i18n.t("toolbar-actual-size")).clicked() {
-                        app.fit_mode = false;
-                        app.zoom = 1.0;
-                        app.touch();
-                    }
-                    if icon_button(ui, "−", app.i18n.t("toolbar-zoom-out")).clicked() {
-                        app.fit_mode = false;
-                        app.zoom = (app.zoom * 0.85).max(0.05);
-                        app.touch();
-                    }
-                    if icon_button(ui, "+", app.i18n.t("toolbar-zoom-in")).clicked() {
-                        app.fit_mode = false;
-                        app.zoom = (app.zoom * 1.15).min(20.0);
-                        app.touch();
-                    }
+fn floating_toolbar(app: &mut LookApp, ui: &mut Ui, viewport_size: Vec2) {
+    ui.horizontal_centered(|ui| {
+        if icon_button(ui, "◀", app.i18n.t("toolbar-prev")).clicked() {
+            app.navigate(-1);
+        }
+        if icon_button(ui, "▶", app.i18n.t("toolbar-next")).clicked() {
+            app.navigate(1);
+        }
+        ui.label(
+            RichText::new(app.counter_label())
+                .color(Semantic::FG_MUTED)
+                .size(12.0),
+        );
+        ui.separator();
+        match &app.media {
+            Some(LoadedMedia::Image { decoded, .. }) => {
+                let img_size = vec2(decoded.width as f32, decoded.height as f32);
+                if icon_button(ui, "Fit", app.i18n.t("toolbar-fit")).clicked() {
+                    app.fit_image();
+                    app.touch();
                 }
+                if icon_button(ui, "1:1", app.i18n.t("toolbar-actual-size")).clicked() {
+                    app.actual_size_image();
+                    app.touch();
+                }
+                if icon_button(ui, "−", app.i18n.t("toolbar-zoom-out")).clicked() {
+                    app.zoom_image(viewport_size, img_size, 1.0 / 1.15);
+                    app.touch();
+                }
+                if icon_button(ui, "+", app.i18n.t("toolbar-zoom-in")).clicked() {
+                    app.zoom_image(viewport_size, img_size, 1.15);
+                    app.touch();
+                }
+            }
                 Some(LoadedMedia::Video { .. }) => {
-                    if icon_button(ui, "▶", app.i18n.t("video-play")).clicked() {
-                        app.play_video_externally();
+                    let label = if app.video_is_playing() {
+                        app.i18n.t("video-pause")
+                    } else {
+                        app.i18n.t("video-play")
+                    };
+                    if icon_button(ui, "▶", label).clicked() {
+                        app.toggle_video_playback();
                         app.touch();
                     }
                 }
-                Some(LoadedMedia::Model { .. }) => {
-                    if icon_button(ui, "3D", app.i18n.t("model-solid")).clicked() {
-                        if let Some(LoadedMedia::Model { wireframe, .. }) = &mut app.media {
-                            *wireframe = false;
-                        }
-                        app.touch();
+            Some(LoadedMedia::Model { .. }) => {
+                if icon_button(ui, "3D", app.i18n.t("model-solid")).clicked() {
+                    if let Some(LoadedMedia::Model { wireframe, .. }) = &mut app.media {
+                        *wireframe = false;
                     }
-                    if icon_button(ui, "▦", app.i18n.t("model-wireframe")).clicked() {
-                        if let Some(LoadedMedia::Model { wireframe, .. }) = &mut app.media {
-                            *wireframe = true;
-                        }
-                        app.touch();
-                    }
-                    if icon_button(ui, "↗", "Open").clicked() {
-                        app.open_model_externally();
-                        app.touch();
-                    }
+                    app.touch();
                 }
-                None => {}
+                if icon_button(ui, "▦", app.i18n.t("model-wireframe")).clicked() {
+                    if let Some(LoadedMedia::Model { wireframe, .. }) = &mut app.media {
+                        *wireframe = true;
+                    }
+                    app.touch();
+                }
+                if icon_button(ui, "↗", app.i18n.t("common-open")).clicked() {
+                    app.open_model_externally();
+                    app.touch();
+                }
             }
-            if icon_button(ui, "ℹ", app.i18n.t("toolbar-info")).clicked() {
-                app.info_open = !app.info_open;
-                app.touch();
-            }
-        });
+            None => {}
+        }
+        if icon_button(ui, "ℹ", app.i18n.t("toolbar-info")).clicked() {
+            app.info_open = !app.info_open;
+            app.touch();
+        }
     });
 }
 
@@ -415,6 +543,35 @@ fn settings_panel(app: &mut LookApp, ui: &mut Ui) {
         &mut app.settings.toolbar_auto_hide,
         app.i18n.t("settings-toolbar-auto-hide"),
     );
+
+    ui.add_space(12.0);
+    ui.separator();
+    ui.label(RichText::new(app.i18n.t("settings-associations")).strong());
+    ui.label(
+        RichText::new(app.i18n.t("settings-associations-hint"))
+            .size(11.0)
+            .color(Semantic::FG_MUTED),
+    );
+    ui.checkbox(
+        &mut app.settings.file_associations.images,
+        app.i18n.t("settings-assoc-images"),
+    );
+    ui.checkbox(
+        &mut app.settings.file_associations.videos,
+        app.i18n.t("settings-assoc-videos"),
+    );
+    ui.checkbox(
+        &mut app.settings.file_associations.models,
+        app.i18n.t("settings-assoc-models"),
+    );
+    if ui.button(app.i18n.t("settings-assoc-apply")).clicked() {
+        app.apply_file_associations();
+    }
+    if let Some(msg) = &app.association_message {
+        ui.label(RichText::new(msg).size(11.0).color(Semantic::FG_SECONDARY));
+    }
+
+    ui.add_space(8.0);
     if ui.button(app.i18n.t("common-close")).clicked() {
         app.settings_open = false;
         let _ = cap_core::save_settings(&app.settings);
@@ -433,6 +590,15 @@ fn open_file_dialog(app: &mut LookApp) {
 }
 
 fn handle_shortcuts(app: &mut LookApp, ctx: &egui::Context) {
+    let viewport_size = ctx.screen_rect().size();
+    let img_size = match &app.media {
+        Some(LoadedMedia::Image { decoded, .. }) => {
+            vec2(decoded.width as f32, decoded.height as f32)
+        }
+        _ => Vec2::ZERO,
+    };
+    let is_image = img_size != Vec2::ZERO;
+
     ctx.input(|i| {
         if i.modifiers.ctrl && i.key_pressed(egui::Key::O) {
             open_file_dialog(app);
@@ -443,17 +609,41 @@ fn handle_shortcuts(app: &mut LookApp, ctx: &egui::Context) {
         if i.key_pressed(egui::Key::ArrowRight) {
             app.navigate(1);
         }
+        if i.key_pressed(egui::Key::Home) && !app.folder_files.is_empty() {
+            app.navigate_to_index(0);
+        }
+        if i.key_pressed(egui::Key::End) && !app.folder_files.is_empty() {
+            app.navigate_to_index(app.folder_files.len() - 1);
+        }
         if i.key_pressed(egui::Key::I) {
             app.info_open = !app.info_open;
             app.touch();
         }
-        if i.key_pressed(egui::Key::Num0) {
-            app.fit_mode = true;
+        if i.key_pressed(egui::Key::Escape) {
+            if app.settings_open {
+                app.settings_open = false;
+            } else if app.info_open {
+                app.info_open = false;
+            }
+        }
+        if is_image && (i.key_pressed(egui::Key::Num0) || i.key_pressed(egui::Key::F)) {
+            app.fit_image();
             app.touch();
         }
-        if i.key_pressed(egui::Key::Num1) {
-            app.fit_mode = false;
-            app.zoom = 1.0;
+        if is_image && i.key_pressed(egui::Key::Num1) {
+            app.actual_size_image();
+            app.touch();
+        }
+        if is_image && i.key_pressed(egui::Key::R) {
+            app.reset_image_view();
+            app.touch();
+        }
+        if is_image && (i.key_pressed(egui::Key::Plus) || i.key_pressed(egui::Key::Equals)) {
+            app.zoom_image(viewport_size, img_size, 1.15);
+            app.touch();
+        }
+        if is_image && i.key_pressed(egui::Key::Minus) {
+            app.zoom_image(viewport_size, img_size, 1.0 / 1.15);
             app.touch();
         }
         if i.modifiers.ctrl && i.key_pressed(egui::Key::Comma) {

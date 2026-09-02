@@ -70,6 +70,26 @@ pub struct AppSettings {
     pub density: UiDensity,
     pub toolbar_auto_hide: bool,
     pub last_directory: Option<PathBuf>,
+    #[serde(default)]
+    pub file_associations: FileAssociations,
+}
+
+/// Which media kinds are registered as default open handlers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileAssociations {
+    pub images: bool,
+    pub videos: bool,
+    pub models: bool,
+}
+
+impl Default for FileAssociations {
+    fn default() -> Self {
+        Self {
+            images: false,
+            videos: false,
+            models: false,
+        }
+    }
 }
 
 impl Default for AppSettings {
@@ -80,6 +100,7 @@ impl Default for AppSettings {
             density: UiDensity::Comfortable,
             toolbar_auto_hide: true,
             last_directory: None,
+            file_associations: FileAssociations::default(),
         }
     }
 }
@@ -164,7 +185,7 @@ const VIDEO_EXTENSIONS: &[&str] = &[
 ];
 
 const MODEL_EXTENSIONS: &[&str] = &[
-    "glb", "gltf", "obj", "stl", "fbx", "ply", "dae", "3mf",
+    "glb", "gltf", "obj", "stl", "fbx", "ply", "dae", "3mf", "max",
 ];
 
 #[cfg(test)]

@@ -1,9 +1,13 @@
-//! Video file metadata helpers.
+//! Video file metadata and in-app playback.
+
+mod player;
 
 use std::path::Path;
 
 use cap_core::MediaKind;
 use thiserror::Error;
+
+pub use player::{PlayerError, VideoFrame, VideoPlayer};
 
 #[derive(Debug, Error)]
 pub enum VideoError {
@@ -11,6 +15,8 @@ pub enum VideoError {
     UnsupportedFormat,
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("playback error: {0}")]
+    Player(#[from] PlayerError),
 }
 
 /// Basic video file information.
@@ -37,13 +43,13 @@ impl VideoInfo {
 
         let playable_in_app = matches!(
             format.as_str(),
-            "MP4" | "M4V" | "WEBM" | "MOV"
+            "MP4" | "M4V" | "WEBM" | "MOV" | "MKV" | "AVI" | "WMV"
         );
 
         let notes = if playable_in_app {
-            "Use Play to open with your system video player.".to_string()
+            "Press Play for in-app playback.".to_string()
         } else {
-            "Container may require external codecs. Use Play to open with system player.".to_string()
+            "Format may require external codecs.".to_string()
         };
 
         Ok(Self {

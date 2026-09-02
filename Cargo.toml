@@ -8,6 +8,8 @@ members = [
     "crates/cap-image",
     "crates/cap-model",
     "crates/cap-video",
+    "crates/cap-viewer",
+    "crates/cap-shell",
 ]
 
 [workspace.package]

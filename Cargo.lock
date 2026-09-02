@@ -31,6 +31,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5a15f179cd60c4584b8a8c596927aadc462e27f2ca70c04e0071964a73ba7a75"
 dependencies = [
  "cfg-if",
+ "getrandom 0.3.4",
  "once_cell",
  "version_check",
  "zerocopy",
@@ -591,8 +592,20 @@ version = "0.1.0"
 dependencies = [
  "cap-core",
  "gltf",
+ "stl_io",
  "tempfile",
  "thiserror 2.0.20",
+ "tobj",
+ "ufbx",
+]
+
+[[package]]
+name = "cap-shell"
+version = "0.1.0"
+dependencies = [
+ "cap-core",
+ "thiserror 2.0.20",
+ "winreg",
 ]
 
 [[package]]
@@ -608,8 +621,21 @@ name = "cap-video"
 version = "0.1.0"
 dependencies = [
  "cap-core",
+ "egui",
  "tempfile",
  "thiserror 2.0.20",
+ "windows",
+ "windows-core",
+]
+
+[[package]]
+name = "cap-viewer"
+version = "0.1.0"
+dependencies = [
+ "cap-model",
+ "cap-ui",
+ "egui",
+ "glam",
 ]
 
 [[package]]
@@ -1107,6 +1133,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "float-cmp"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "98de4bbd547a563b716d8dfa9aad1cb19bfab00f4fa09a6a4ed21dbcf44ce9c4"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "foldhash"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1267,6 +1302,12 @@ dependencies = [
  "log",
  "xml-rs",
 ]
+
+[[package]]
+name = "glam"
+version = "0.29.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8babf46d4c1c9d92deac9f7be466f76dfc4482b6452fc5024b5e8daf6ffeb3ee"
 
 [[package]]
 name = "glow"
@@ -1821,8 +1862,10 @@ dependencies = [
  "cap-i18n",
  "cap-image",
  "cap-model",
+ "cap-shell",
  "cap-ui",
  "cap-video",
+ "cap-viewer",
  "eframe",
  "egui",
  "image",
@@ -3163,6 +3206,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
+name = "stl_io"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d520eb03e632e666ac32f3c0cf018ac6dcd535ab0be1420937e2d896f44f7cf7"
+dependencies = [
+ "byteorder",
+ "float-cmp",
+]
+
+[[package]]
 name = "strum"
 version = "0.26.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3304,6 +3357,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tobj"
+version = "4.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6eb8e04167c1c0c76b5de63226fd733485ad63ef71e40de31e16272f47b099e2"
+dependencies = [
+ "ahash",
+]
+
+[[package]]
 name = "toml"
 version = "0.8.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3430,6 +3492,15 @@ dependencies = [
  "memoffset",
  "tempfile",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "ufbx"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2bf2324f07023fcd0507bb122c5406911e73f7b4f1056c903d740b57128bab84"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
@@ -4174,6 +4245,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "winreg"
+version = "0.55.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb5a765337c50e9ec252c2069be9bf91c7df47afb103b642ba3a53bf8101be97"
+dependencies = [
+ "cfg-if",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

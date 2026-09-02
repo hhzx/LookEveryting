@@ -1,0 +1,13 @@
+[package]
+name = "cap-shell"
+description = "OS shell integration for LookEveryting"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+cap-core = { path = "../cap-core" }
+thiserror = "2"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"

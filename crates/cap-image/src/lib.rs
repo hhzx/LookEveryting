@@ -72,6 +72,16 @@ pub fn probe_dimensions(path: &Path) -> Result<(u32, u32), ImageError> {
     Ok(image.dimensions())
 }
 
+/// Decode a downscaled thumbnail for the filmstrip UI.
+pub fn decode_thumbnail(path: &Path, max_size: u32) -> Result<DecodedImage, ImageError> {
+    if cap_core::classify_extension(path) != Some(MediaKind::Image) {
+        return Err(ImageError::UnsupportedFormat);
+    }
+    let image = ImageReader::open(path)?.with_guessed_format()?.decode()?;
+    let thumb = image.thumbnail(max_size, max_size);
+    Ok(DecodedImage::from_dynamic(thumb, ImageFormat::Png))
+}
+
 fn guess_format(path: &Path) -> Option<ImageFormat> {
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
     match ext.as_str() {

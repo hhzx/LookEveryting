@@ -6,10 +6,13 @@ use std::time::Instant;
 use cap_core::{classify_extension, load_settings, save_settings, AppSettings, MediaKind};
 use cap_i18n::{I18n, Locale};
 use cap_image::DecodedImage;
-use cap_model::ModelInfo;
+use cap_model::{load_mesh, MeshData, ModelInfo};
 use cap_ui::layout::{LayoutMode, ViewerMode};
-use cap_video::VideoInfo;
+use cap_video::{VideoInfo, VideoPlayer};
+use cap_viewer::OrbitCamera;
 use egui::{ColorImage, TextureHandle, Vec2};
+
+use crate::thumbnails::ThumbnailCache;
 
 /// Loaded media content for the viewport.
 pub enum LoadedMedia {
@@ -20,11 +23,16 @@ pub enum LoadedMedia {
     Video {
         info: VideoInfo,
         path: PathBuf,
+        player: Option<VideoPlayer>,
+        texture: Option<TextureHandle>,
+        playing: bool,
     },
     Model {
         info: ModelInfo,
         path: PathBuf,
         wireframe: bool,
+        mesh: Option<MeshData>,
+        camera: OrbitCamera,
     },
 }
 
@@ -46,6 +54,10 @@ pub struct LookApp {
     pub pan: Vec2,
     pub toast: Option<String>,
     pub error: Option<String>,
+    pub thumbnails: ThumbnailCache,
+    pub association_message: Option<String>,
+    /// Avoid re-scrolling the filmstrip every frame (prevents vertical jump).
+    pub thumb_scroll_synced_index: Option<usize>,
 }
 
 impl LookApp {
@@ -69,6 +81,9 @@ impl LookApp {
             pan: Vec2::ZERO,
             toast: None,
             error: None,
+            thumbnails: ThumbnailCache::new(),
+            association_message: None,
+            thumb_scroll_synced_index: None,
         }
     }
 
@@ -115,9 +130,14 @@ impl LookApp {
             },
             Some(MediaKind::Video) => match VideoInfo::from_path(&path) {
                 Ok(info) => {
+                    let player = VideoPlayer::open(path.clone()).ok();
+                    let playing = false;
                     self.media = Some(LoadedMedia::Video {
                         info,
                         path: path.clone(),
+                        player,
+                        texture: None,
+                        playing,
                     });
                     self.current_path = Some(path);
                     self.viewer_mode = ViewerMode::Viewer;
@@ -126,10 +146,23 @@ impl LookApp {
             },
             Some(MediaKind::Model) => match ModelInfo::from_path(&path) {
                 Ok(info) => {
+                    let mesh = match load_mesh(&path) {
+                        Ok(m) => Some(m),
+                        Err(err) => {
+                            self.error = Some(err.to_string());
+                            None
+                        }
+                    };
+                    let camera = mesh
+                        .as_ref()
+                        .map(|m| OrbitCamera::fit_bounds(&m.bounds))
+                        .unwrap_or_default();
                     self.media = Some(LoadedMedia::Model {
                         info,
                         path: path.clone(),
                         wireframe: false,
+                        mesh,
+                        camera,
                     });
                     self.current_path = Some(path);
                     self.viewer_mode = ViewerMode::Viewer;
@@ -137,12 +170,19 @@ impl LookApp {
                 Err(err) => self.error = Some(err.to_string()),
             },
             None | Some(MediaKind::Unknown) => {
-                self.error = Some(self.i18n.t("toast-open-failed").to_string())
+                self.error = Some(self.i18n.t("toast-file-not-supported").to_string())
             }
         }
     }
 
     pub fn refresh_folder(&mut self, folder: &Path, current: &Path) {
+        let same_folder = self
+            .current_path
+            .as_ref()
+            .and_then(|p| p.parent())
+            .map(|p| p == folder)
+            .unwrap_or(false);
+
         let mut files: Vec<PathBuf> = walkdir::WalkDir::new(folder)
             .max_depth(1)
             .into_iter()
@@ -157,6 +197,10 @@ impl LookApp {
             .position(|p| p == current)
             .unwrap_or(0);
         self.folder_files = files;
+        if !same_folder {
+            self.thumbnails.clear();
+            self.thumb_scroll_synced_index = None;
+        }
     }
 
     pub fn navigate(&mut self, delta: isize) {
@@ -166,6 +210,14 @@ impl LookApp {
         let len = self.folder_files.len();
         let next = (self.current_index as isize + delta).rem_euclid(len as isize) as usize;
         let path = self.folder_files[next].clone();
+        self.open_path(path);
+    }
+
+    pub fn navigate_to_index(&mut self, index: usize) {
+        if index >= self.folder_files.len() {
+            return;
+        }
+        let path = self.folder_files[index].clone();
         self.open_path(path);
     }
 
@@ -182,6 +234,78 @@ impl LookApp {
                 *texture = Some(handle);
             }
         }
+        self.ensure_video_texture(ctx);
+    }
+
+    pub fn tick_video(&mut self, ctx: &egui::Context) {
+        let mut frame = None;
+        if let Some(LoadedMedia::Video { player, playing, .. }) = &mut self.media {
+            if let Some(player) = player {
+                if *playing {
+                    frame = player.tick();
+                } else if player.current_frame().is_none() {
+                    frame = player.seek_start();
+                }
+            }
+        }
+        if let Some(frame) = frame {
+            if let Some(LoadedMedia::Video { texture, .. }) = &mut self.media {
+                let image = ColorImage::from_rgba_unmultiplied(
+                    [frame.width as usize, frame.height as usize],
+                    &frame.rgba,
+                );
+                let handle = ctx.load_texture(
+                    format!("video-{}", self.current_index),
+                    image,
+                    egui::TextureOptions::LINEAR,
+                );
+                *texture = Some(handle);
+            }
+            ctx.request_repaint();
+        }
+    }
+
+    fn ensure_video_texture(&mut self, ctx: &egui::Context) {
+        if let Some(LoadedMedia::Video {
+            player,
+            texture,
+            ..
+        }) = &mut self.media
+        {
+            if texture.is_none() {
+                if let Some(player) = player {
+                    if let Some(frame) = player.seek_start() {
+                        let image = ColorImage::from_rgba_unmultiplied(
+                            [frame.width as usize, frame.height as usize],
+                            &frame.rgba,
+                        );
+                        let handle = ctx.load_texture(
+                            "video-preview",
+                            image,
+                            egui::TextureOptions::LINEAR,
+                        );
+                        *texture = Some(handle);
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn toggle_video_playback(&mut self) {
+        if let Some(LoadedMedia::Video { player, playing, .. }) = &mut self.media {
+            if let Some(player) = player {
+                player.toggle();
+                *playing = player.is_playing();
+                self.touch();
+            }
+        }
+    }
+
+    pub fn video_is_playing(&self) -> bool {
+        matches!(
+            &self.media,
+            Some(LoadedMedia::Video { playing: true, .. })
+        )
     }
 
     pub fn file_name(&self) -> &str {
@@ -215,6 +339,30 @@ impl LookApp {
     pub fn open_model_externally(&self) {
         if let Some(LoadedMedia::Model { path, .. }) = &self.media {
             let _ = open::that(path);
+        }
+    }
+
+    pub fn apply_file_associations(&mut self) {
+        self.association_message = None;
+        let prefs = self.settings.file_associations.clone();
+        let result = if prefs.images || prefs.videos || prefs.models {
+            cap_shell::current_exe()
+                .and_then(|exe| cap_shell::apply_file_associations(&exe, &prefs))
+        } else {
+            cap_shell::clear_file_associations()
+        };
+        match result {
+            Ok(()) => {
+                self.association_message = Some(self.i18n.t("settings-assoc-success").to_string());
+                let _ = save_settings(&self.settings);
+            }
+            Err(err) => {
+                self.association_message = Some(
+                    self.i18n
+                        .t("settings-assoc-failed")
+                        .replace("{error}", &err.to_string()),
+                );
+            }
         }
     }
 }
