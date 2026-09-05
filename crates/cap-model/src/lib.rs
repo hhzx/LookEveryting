@@ -69,16 +69,13 @@ impl ModelInfo {
 }
 
 pub fn info_from_mesh(ext: &str, mesh: &MeshData) -> ModelInfo {
-    let triangle_count = if mesh.indices.is_empty() {
-        mesh.vertices.len() / 3
-    } else {
-        mesh.indices.len() / 3
-    };
     ModelInfo {
         format: ext.to_ascii_uppercase(),
-        mesh_count: 1,
+        mesh_count: mesh.mesh_count.max(1),
+        material_count: mesh.material_count,
         vertex_count: mesh.vertices.len(),
-        triangle_count,
+        triangle_count: mesh.triangle_count(),
+        has_textures: mesh.albedo.is_some() || mesh.normal.is_some(),
         notes: "Loaded for in-app preview.".to_string(),
         ..Default::default()
     }

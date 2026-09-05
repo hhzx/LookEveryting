@@ -20,10 +20,13 @@ struct GpuVertex {
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Uniforms {
     mvp: [[f32; 4]; 4],
+    /// xyz = key light direction, w = key intensity
     light_dir: [f32; 4],
     base_color: [f32; 4],
-    /// x=metallic, y=roughness, z=has_albedo (1/0), w=has_normal (1/0)
+    /// x=metallic, y=roughness, z=has_albedo, w=has_normal
     params: [f32; 4],
+    /// x=ambient, y=fill, z=material mode, w=pad
+    env: [f32; 4],
 }
 
 /// Persistent GPU resources stored in egui_wgpu callback_resources.
@@ -38,6 +41,8 @@ pub struct MeshRenderResources {
     offscreen: Option<OffscreenTargets>,
     pending_mvp: [[f32; 4]; 4],
     pending_wireframe: bool,
+    pending_light: [f32; 4],
+    pending_env: [f32; 4],
 }
 
 struct UploadedMesh {
@@ -229,6 +234,8 @@ impl MeshRenderResources {
             offscreen: None,
             pending_mvp: Mat4::IDENTITY.to_cols_array_2d(),
             pending_wireframe: false,
+            pending_light: [0.35, 0.75, 0.45, 1.25],
+            pending_env: [1.0, 0.35, 0.0, 0.0],
         }
     }
 
@@ -492,6 +499,10 @@ pub struct MeshPaintCallback {
     pub size_px: (u32, u32),
     pub mesh_to_upload: Option<Arc<MeshData>>,
     pub clear_mesh: bool,
+    /// xyz = light dir, w = key intensity
+    pub light_dir: [f32; 4],
+    /// x=ambient, y=fill, z=material mode
+    pub env: [f32; 4],
 }
 
 impl CallbackTrait for MeshPaintCallback {
@@ -516,6 +527,8 @@ impl CallbackTrait for MeshPaintCallback {
 
         res.pending_mvp = self.mvp.to_cols_array_2d();
         res.pending_wireframe = self.wireframe;
+        res.pending_light = self.light_dir;
+        res.pending_env = self.env;
         res.ensure_offscreen(device, self.size_px.0, self.size_px.1);
 
         let Some(mesh) = res.mesh.as_ref() else {
@@ -525,16 +538,34 @@ impl CallbackTrait for MeshPaintCallback {
             return Vec::new();
         };
 
-        let uniforms = Uniforms {
-            mvp: res.pending_mvp,
-            light_dir: [0.35, 0.75, 0.45, 0.0],
-            base_color: mesh.base_color,
-            params: [
+        let mode = res.pending_env[2];
+        let (base_color, metallic, roughness, has_albedo, has_normal) = if mode > 0.5 && mode < 1.5 {
+            // Clay
+            ([0.92, 0.92, 0.94, 1.0], 0.0, 0.65, false, false)
+        } else if mode > 2.5 && mode < 3.5 {
+            // Normals viz — keep geometry maps off
+            (mesh.base_color, 0.0, 1.0, false, false)
+        } else {
+            (
+                mesh.base_color,
                 mesh.metallic,
                 mesh.roughness,
-                if mesh.has_albedo { 1.0 } else { 0.0 },
-                if mesh.has_normal { 1.0 } else { 0.0 },
+                mesh.has_albedo,
+                mesh.has_normal,
+            )
+        };
+
+        let uniforms = Uniforms {
+            mvp: res.pending_mvp,
+            light_dir: res.pending_light,
+            base_color,
+            params: [
+                metallic,
+                roughness,
+                if has_albedo { 1.0 } else { 0.0 },
+                if has_normal { 1.0 } else { 0.0 },
             ],
+            env: res.pending_env,
         };
         queue.write_buffer(&mesh.uniform_buf, 0, bytemuck::bytes_of(&uniforms));
 
@@ -610,6 +641,7 @@ struct Uniforms {
     light_dir: vec4<f32>,
     base_color: vec4<f32>,
     params: vec4<f32>,
+    env: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var albedo_tex: texture_2d<f32>;
@@ -669,6 +701,13 @@ fn perturb_normal(n: vec3<f32>, pos: vec3<f32>, uv: vec2<f32>, map_n: vec3<f32>)
     return normalize(tbn * map_n);
 }
 
+fn checker(uv: vec2<f32>) -> vec3<f32> {
+    let ix = i32(floor(uv.x * 8.0));
+    let iy = i32(floor(uv.y * 8.0));
+    let odd = ((ix + iy) & 1) == 0;
+    return select(vec3<f32>(0.22, 0.22, 0.24), vec3<f32>(0.88, 0.88, 0.90), odd);
+}
+
 @fragment
 fn fs_main(i: VsOut) -> @location(0) vec4<f32> {
     var n = normalize(i.normal);
@@ -676,22 +715,39 @@ fn fs_main(i: VsOut) -> @location(0) vec4<f32> {
         let nm = textureSample(normal_tex, albedo_samp, i.uv).xyz * 2.0 - 1.0;
         n = perturb_normal(n, i.world_pos, i.uv, nm);
     }
+
+    let mode = u.env.z;
+    // Normals visualization
+    if (mode > 2.5 && mode < 3.5) {
+        return vec4<f32>(n * 0.5 + 0.5, 1.0);
+    }
+
     let l = normalize(u.light_dir.xyz);
+    let key_i = max(u.light_dir.w, 0.0);
+    let ambient_i = max(u.env.x, 0.0);
+    let fill_i = max(u.env.y, 0.0);
     let v = normalize(vec3<f32>(0.0, 0.15, 1.0) - i.world_pos * 0.15);
     let r = reflect(-v, n);
+
     var albedo = u.base_color.rgb;
-    if (u.params.z > 0.5) {
+    if (mode > 1.5 && mode < 2.5) {
+        albedo = checker(i.uv);
+    } else if (u.params.z > 0.5) {
         albedo = albedo * textureSample(albedo_tex, albedo_samp, i.uv).rgb;
     }
+
     let metallic = clamp(u.params.x, 0.0, 1.0);
     let roughness = clamp(u.params.y, 0.04, 1.0);
     let ndotl = max(dot(n, l), 0.0);
+    let fill_dir = normalize(vec3<f32>(-l.x, l.y * 0.4, -l.z));
+    let fill_term = max(dot(n, fill_dir), 0.0) * fill_i;
     let h = normalize(l + v);
     let ndoth = max(dot(n, h), 0.0);
     let f0 = mix(vec3<f32>(0.04), albedo, metallic);
-    let diffuse = albedo * (1.0 - metallic) * (env_irradiance(n) * 0.55 + ndotl * 0.45);
-    let spec_lobe = pow(ndoth, mix(8.0, 96.0, 1.0 - roughness));
-    let specular = f0 * (env_specular(r, roughness) * 0.65 + spec_lobe * 0.55);
+    let diffuse = albedo * (1.0 - metallic)
+        * (env_irradiance(n) * (0.35 * ambient_i) + ndotl * (0.55 * key_i) + fill_term * 0.35);
+    let spec_lobe = pow(ndoth, mix(8.0, 96.0, 1.0 - roughness)) * key_i;
+    let specular = f0 * (env_specular(r, roughness) * (0.45 * ambient_i) + spec_lobe * 0.55);
     let color = diffuse + specular;
     return vec4<f32>(color, u.base_color.a);
 }

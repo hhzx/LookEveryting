@@ -8,7 +8,7 @@ use cap_ui::colors::{Palette, Semantic};
 use cap_ui::layout::LayoutMode;
 use cap_ui::spacing::{component, space};
 use cap_ui::widgets::{ghost_button, icon_button, paint_floating_panel, panel_frame, titlebar_frame};
-use cap_viewer::{draw_mesh_viewport_ex, MeshDrawOpts, ViewportBg};
+use cap_viewer::{draw_mesh_viewport_ex, MaterialMode, MeshDrawOpts, ViewportBg};
 use egui::{pos2, vec2, Align2, Color32, Frame, RichText, Sense, Ui, Vec2};
 
 use crate::app::{ErrorAction, LoadedMedia, LookApp};
@@ -460,18 +460,11 @@ fn viewport(app: &mut LookApp, ui: &mut Ui) {
         Some(LoadedMedia::Model {
             info,
             path,
-            wireframe,
-            bg,
+            scene,
             mesh,
             camera,
         }) => {
             if let Some(mesh) = mesh.as_ref() {
-                let vert_count = mesh.vertices.len();
-                let tri_count = if mesh.indices.is_empty() {
-                    mesh.vertices.len() / 3
-                } else {
-                    mesh.indices.len() / 3
-                };
                 let upload = if app.mesh_upload_pending {
                     app.mesh_upload_pending = false;
                     Some(std::sync::Arc::clone(mesh))
@@ -483,30 +476,17 @@ fn viewport(app: &mut LookApp, ui: &mut Ui) {
                     rect,
                     mesh,
                     camera,
-                    *wireframe,
-                    *bg,
+                    scene,
                     MeshDrawOpts {
                         gpu_available: app.gpu_mesh,
                         mesh_to_upload: upload,
                         clear_gpu_mesh: false,
                     },
                 );
-                let hud = format!(
-                    "{} · {}",
-                    app.i18n
-                        .t("model-hud-verts")
-                        .replace("{count}", &vert_count.to_string()),
-                    app.i18n
-                        .t("model-hud-tris")
-                        .replace("{count}", &tri_count.to_string()),
-                );
-                ui.painter().text(
-                    rect.left_top() + vec2(12.0, 8.0),
-                    Align2::LEFT_TOP,
-                    hud,
-                    egui::FontId::monospace(11.0),
-                    Semantic::FG_MUTED,
-                );
+                if scene.show_stats {
+                    draw_model_stats_hud(ui, rect, mesh, info);
+                }
+                draw_model_scene_panel(app, ui, rect);
                 let hint = app.i18n.t("model-hint");
                 ui.painter().text(
                     rect.left_bottom() + vec2(12.0, -8.0),
@@ -527,6 +507,166 @@ fn viewport(app: &mut LookApp, ui: &mut Ui) {
                 );
             }
         }
+    }
+}
+
+fn draw_model_stats_hud(
+    ui: &mut Ui,
+    rect: egui::Rect,
+    mesh: &cap_model::MeshData,
+    info: &cap_model::ModelInfo,
+) {
+    let tris = mesh.triangle_count();
+    let verts = mesh.vertices.len();
+    let meshes = mesh.mesh_count.max(info.mesh_count).max(1);
+    let mats = mesh.material_count.max(info.material_count);
+    let ext = mesh.extent_xyz();
+    let panel = egui::Rect::from_min_size(rect.left_top() + vec2(12.0, 12.0), vec2(168.0, 118.0));
+    ui.painter()
+        .rect_filled(panel, 8.0, Color32::from_rgba_unmultiplied(12, 12, 16, 200));
+    ui.painter().rect_stroke(
+        panel,
+        8.0,
+        egui::Stroke::new(1.0, Palette::BORDER_SUBTLE),
+        egui::StrokeKind::Inside,
+    );
+    let lines = [
+        format!("三角面  {tris}"),
+        format!("顶点    {verts}"),
+        format!("网格    {meshes}"),
+        format!("材质    {mats}"),
+        format!(
+            "尺寸    {:.2} / {:.2} / {:.2}",
+            ext[0], ext[1], ext[2]
+        ),
+    ];
+    for (i, line) in lines.iter().enumerate() {
+        ui.painter().text(
+            panel.left_top() + vec2(12.0, 12.0 + i as f32 * 18.0),
+            Align2::LEFT_TOP,
+            line,
+            egui::FontId::monospace(12.0),
+            Semantic::FG_SECONDARY,
+        );
+    }
+}
+
+fn draw_model_scene_panel(app: &mut LookApp, ui: &mut Ui, rect: egui::Rect) {
+    let panel_w = 220.0_f32;
+    let panel = egui::Rect::from_min_max(
+        pos2(rect.right() - panel_w - 12.0, rect.top() + 12.0),
+        pos2(rect.right() - 12.0, (rect.top() + 320.0).min(rect.bottom() - 8.0)),
+    );
+
+    let title = app.i18n.t("model-scene-title").to_string();
+    let mat_title = app.i18n.t("model-mat-title").to_string();
+    let display_title = app.i18n.t("model-display-title").to_string();
+    let light_title = app.i18n.t("model-light-title").to_string();
+    let mat_labels: Vec<(MaterialMode, String)> = MaterialMode::ALL
+        .iter()
+        .map(|m| (*m, app.i18n.t(m.label_key()).to_string()))
+        .collect();
+    let show_grid = app.i18n.t("model-show-grid").to_string();
+    let show_axes = app.i18n.t("model-show-axes").to_string();
+    let auto_rotate = app.i18n.t("model-auto-rotate").to_string();
+    let show_stats = app.i18n.t("model-show-stats").to_string();
+    let light_key = app.i18n.t("model-light-key").to_string();
+    let light_az = app.i18n.t("model-light-az").to_string();
+    let light_el = app.i18n.t("model-light-el").to_string();
+    let light_amb = app.i18n.t("model-light-ambient").to_string();
+    let light_fill = app.i18n.t("model-light-fill").to_string();
+
+    let mut touched = false;
+    {
+        let Some(LoadedMedia::Model { scene, .. }) = &mut app.media else {
+            return;
+        };
+
+        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(panel), |ui| {
+            egui::Frame::NONE
+                .fill(Color32::from_rgba_unmultiplied(12, 12, 16, 210))
+                .corner_radius(8.0)
+                .inner_margin(egui::Margin::same(10))
+                .stroke(egui::Stroke::new(1.0_f32, Palette::BORDER_SUBTLE))
+                .show(ui, |ui| {
+                    ui.set_min_width(panel_w - 20.0);
+                    ui.label(RichText::new(&title).size(12.0).color(Semantic::FG_MUTED));
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(&mat_title).size(11.0));
+                    ui.horizontal_wrapped(|ui| {
+                        for (mode, label) in &mat_labels {
+                            let selected = scene.material_mode == *mode;
+                            if ui.selectable_label(selected, label).clicked() {
+                                scene.material_mode = *mode;
+                                touched = true;
+                            }
+                        }
+                    });
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(&display_title).size(11.0));
+                    if ui.checkbox(&mut scene.show_grid, &show_grid).changed() {
+                        touched = true;
+                    }
+                    if ui.checkbox(&mut scene.show_axes, &show_axes).changed() {
+                        touched = true;
+                    }
+                    if ui.checkbox(&mut scene.auto_rotate, &auto_rotate).changed() {
+                        touched = true;
+                    }
+                    if ui.checkbox(&mut scene.show_stats, &show_stats).changed() {
+                        touched = true;
+                    }
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(&light_title).size(11.0));
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut scene.lighting.key_intensity, 0.0..=3.0)
+                                .text(&light_key),
+                        )
+                        .changed()
+                    {
+                        touched = true;
+                    }
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut scene.lighting.key_azimuth_deg, 0.0..=360.0)
+                                .text(&light_az),
+                        )
+                        .changed()
+                    {
+                        touched = true;
+                    }
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut scene.lighting.key_elevation_deg, 5.0..=89.0)
+                                .text(&light_el),
+                        )
+                        .changed()
+                    {
+                        touched = true;
+                    }
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut scene.lighting.ambient, 0.0..=2.0).text(&light_amb),
+                        )
+                        .changed()
+                    {
+                        touched = true;
+                    }
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut scene.lighting.fill, 0.0..=1.5).text(&light_fill),
+                        )
+                        .changed()
+                    {
+                        touched = true;
+                    }
+                });
+        });
+    }
+
+    if touched {
+        app.touch();
     }
 }
 
@@ -1001,28 +1141,54 @@ fn floating_toolbar(app: &mut LookApp, ui: &mut Ui, viewport_size: Vec2) {
                     }
                 }
             Some(LoadedMedia::Model { .. }) => {
-                if icon_button(ui, "3D", app.i18n.t("model-solid")).clicked() {
-                    if let Some(LoadedMedia::Model { wireframe, .. }) = &mut app.media {
-                        *wireframe = false;
+                let mut touched = false;
+                let mut reset_cam = false;
+                let mut open_ext = false;
+                if let Some(LoadedMedia::Model {
+                    scene,
+                    camera,
+                    mesh,
+                    ..
+                }) = &mut app.media
+                {
+                    for mode in MaterialMode::ALL {
+                        let selected = scene.material_mode == mode;
+                        let label = app.i18n.t(mode.label_key());
+                        let text = if selected {
+                            RichText::new(label).color(Palette::ACCENT)
+                        } else {
+                            RichText::new(label)
+                        };
+                        if ui
+                            .add(egui::Button::new(text).min_size(vec2(36.0, 28.0)))
+                            .on_hover_text(app.i18n.t(mode.label_key()))
+                            .clicked()
+                        {
+                            scene.material_mode = mode;
+                            touched = true;
+                        }
                     }
-                    app.touch();
-                }
-                if icon_button(ui, "▦", app.i18n.t("model-wireframe")).clicked() {
-                    if let Some(LoadedMedia::Model { wireframe, .. }) = &mut app.media {
-                        *wireframe = true;
+                    if icon_button(ui, "↺", app.i18n.t("model-reset-camera")).clicked() {
+                        if let Some(m) = mesh.as_ref() {
+                            *camera = cap_viewer::OrbitCamera::fit_bounds(&m.bounds);
+                        }
+                        reset_cam = true;
                     }
-                    app.touch();
-                }
-                if icon_button(ui, "◎", "Background").clicked() {
-                    if let Some(LoadedMedia::Model { bg, .. }) = &mut app.media {
-                        *bg = match *bg {
+                    if icon_button(ui, "◎", app.i18n.t("model-bg-toggle")).clicked() {
+                        scene.bg = match scene.bg {
                             ViewportBg::Solid => ViewportBg::Gradient,
                             ViewportBg::Gradient => ViewportBg::Solid,
                         };
+                        touched = true;
                     }
-                    app.touch();
                 }
                 if icon_button(ui, "↗", app.i18n.t("common-open")).clicked() {
+                    open_ext = true;
+                }
+                if touched || reset_cam {
+                    app.touch();
+                }
+                if open_ext {
                     app.open_model_externally();
                     app.touch();
                 }

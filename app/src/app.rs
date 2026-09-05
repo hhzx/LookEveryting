@@ -11,7 +11,7 @@ use cap_model::{MeshData, ModelInfo};
 use cap_ui::layout::{LayoutMode, ViewerMode};
 use cap_ui::motion::behavior as motion_behavior;
 use cap_video::VideoInfo;
-use cap_viewer::{OrbitCamera, ViewportBg};
+use cap_viewer::{OrbitCamera, SceneSettings};
 use egui::{ColorImage, TextureHandle, Vec2};
 
 use crate::loader::{paths_equal, normalize_path, ImageCache, LoadedPayload, LoadMessage, MediaLoader, next_generation};
@@ -47,8 +47,7 @@ pub enum LoadedMedia {
     Model {
         info: ModelInfo,
         path: PathBuf,
-        wireframe: bool,
-        bg: ViewportBg,
+        scene: SceneSettings,
         mesh: Option<std::sync::Arc<MeshData>>,
         camera: OrbitCamera,
     },
@@ -674,8 +673,7 @@ impl LookApp {
                 self.media = Some(LoadedMedia::Model {
                     info,
                     path,
-                    wireframe: false,
-                    bg: ViewportBg::Gradient,
+                    scene: SceneSettings::default(),
                     mesh,
                     camera,
                 });

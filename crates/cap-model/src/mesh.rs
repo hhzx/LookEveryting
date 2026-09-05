@@ -58,6 +58,9 @@ pub struct MeshData {
     pub albedo: Option<TextureMap>,
     /// Optional tangent-space normal map (RGBA8, XYZ in RGB).
     pub normal: Option<TextureMap>,
+    /// Source mesh / material counts for HUD (best-effort).
+    pub mesh_count: usize,
+    pub material_count: usize,
 }
 
 /// RGBA8 texture map (albedo or normal).
@@ -83,7 +86,27 @@ impl Default for MeshData {
             roughness: 0.5,
             albedo: None,
             normal: None,
+            mesh_count: 0,
+            material_count: 0,
         }
+    }
+}
+
+impl MeshData {
+    pub fn triangle_count(&self) -> usize {
+        if self.indices.is_empty() {
+            self.vertices.len() / 3
+        } else {
+            self.indices.len() / 3
+        }
+    }
+
+    pub fn extent_xyz(&self) -> [f32; 3] {
+        [
+            (self.bounds.max[0] - self.bounds.min[0]).abs(),
+            (self.bounds.max[1] - self.bounds.min[1]).abs(),
+            (self.bounds.max[2] - self.bounds.min[2]).abs(),
+        ]
     }
 }
 
@@ -180,6 +203,7 @@ fn load_obj(path: &Path) -> Result<MeshData, ModelError> {
         vertices,
         indices,
         bounds: Bounds::default(),
+        mesh_count: 1,
         ..Default::default()
     })
 }
@@ -202,6 +226,7 @@ fn load_stl(path: &Path) -> Result<MeshData, ModelError> {
         vertices,
         indices,
         bounds: Bounds::default(),
+        mesh_count: 1,
         ..Default::default()
     })
 }
@@ -315,6 +340,8 @@ fn load_gltf(path: &Path) -> Result<MeshData, ModelError> {
         roughness,
         albedo,
         normal,
+        mesh_count: document.meshes().count().max(1),
+        material_count: document.materials().count(),
     })
 }
 
@@ -335,30 +362,121 @@ fn load_fbx(path: &Path) -> Result<MeshData, ModelError> {
 
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
-    for mesh in scene.meshes.as_ref() {
-        let base = vertices.len() as u32;
-        for v in mesh.vertices.as_ref() {
-            vertices.push([v.x as f32, v.y as f32, v.z as f32]);
+    let mut uvs = Vec::new();
+    let mut mesh_count = 0usize;
+    let mut material_count = scene.materials.as_ref().len();
+
+    // Prefer nodes so instance transforms (geometry_to_world) are applied.
+    let mut saw_node_mesh = false;
+    for node in scene.nodes.as_ref() {
+        let Some(mesh) = node.mesh.as_ref() else {
+            continue;
+        };
+        if !mesh.vertex_position.exists {
+            continue;
         }
-        for face in mesh.faces.as_ref() {
-            if face.num_indices < 3 {
+        saw_node_mesh = true;
+        mesh_count += 1;
+        material_count = material_count.max(mesh.materials.as_ref().len());
+        append_ufbx_mesh(
+            mesh,
+            Some(&node.geometry_to_world),
+            &mut vertices,
+            &mut indices,
+            &mut uvs,
+        );
+    }
+
+    if !saw_node_mesh {
+        for mesh in scene.meshes.as_ref() {
+            if !mesh.vertex_position.exists && mesh.vertices.as_ref().is_empty() {
                 continue;
             }
-            let a = mesh.vertex_indices[face.index_begin as usize] + base;
-            for i in 1..(face.num_indices as usize - 1) {
-                let b = mesh.vertex_indices[face.index_begin as usize + i] + base;
-                let c = mesh.vertex_indices[face.index_begin as usize + i + 1] + base;
-                indices.extend_from_slice(&[a, b, c]);
-            }
+            mesh_count += 1;
+            material_count = material_count.max(mesh.materials.as_ref().len());
+            append_ufbx_mesh(mesh, None, &mut vertices, &mut indices, &mut uvs);
         }
+    }
+
+    if vertices.is_empty() {
+        return Err(ModelError::Message(
+            "No geometry found in file (empty or unsupported FBX geometry)."
+                .to_string(),
+        ));
     }
 
     Ok(MeshData {
         vertices,
         indices,
         bounds: Bounds::default(),
+        uvs,
+        mesh_count: mesh_count.max(1),
+        material_count,
         ..Default::default()
     })
+}
+
+fn append_ufbx_mesh(
+    mesh: &ufbx::Mesh,
+    xform: Option<&ufbx::Matrix>,
+    vertices: &mut Vec<[f32; 3]>,
+    indices: &mut Vec<u32>,
+    uvs: &mut Vec<[f32; 2]>,
+) {
+    let _base = vertices.len() as u32;
+    let use_stream = mesh.vertex_position.exists;
+
+    if use_stream {
+        // Expand face corners → unique triangle verts (handles non-unique UVs).
+        for face in mesh.faces.as_ref() {
+            if face.num_indices < 3 {
+                continue;
+            }
+            let begin = face.index_begin as usize;
+            let i0 = begin;
+            for t in 1..(face.num_indices as usize - 1) {
+                let corners = [i0, begin + t, begin + t + 1];
+                for &corner in &corners {
+                    let mut p = mesh.vertex_position[corner];
+                    if let Some(m) = xform {
+                        p = ufbx::transform_position(m, p);
+                    }
+                    vertices.push([p.x as f32, p.y as f32, p.z as f32]);
+                    let uv = if mesh.vertex_uv.exists {
+                        let u = mesh.vertex_uv[corner];
+                        [u.x as f32, u.y as f32]
+                    } else {
+                        [0.0, 0.0]
+                    };
+                    uvs.push(uv);
+                    indices.push((vertices.len() as u32) - 1);
+                }
+            }
+        }
+        return;
+    }
+
+    // Fallback: unique positions + vertex_indices fan.
+    let local_base = vertices.len() as u32;
+    for v in mesh.vertices.as_ref() {
+        let mut p = *v;
+        if let Some(m) = xform {
+            p = ufbx::transform_position(m, p);
+        }
+        vertices.push([p.x as f32, p.y as f32, p.z as f32]);
+        uvs.push([0.0, 0.0]);
+    }
+    for face in mesh.faces.as_ref() {
+        if face.num_indices < 3 {
+            continue;
+        }
+        let a = mesh.vertex_indices[face.index_begin as usize] + local_base;
+        for i in 1..(face.num_indices as usize - 1) {
+            let b = mesh.vertex_indices[face.index_begin as usize + i] + local_base;
+            let c = mesh.vertex_indices[face.index_begin as usize + i + 1] + local_base;
+            indices.extend_from_slice(&[a, b, c]);
+        }
+    }
 }
 
 #[cfg(test)]

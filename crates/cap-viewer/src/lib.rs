@@ -1,16 +1,18 @@
 //! 3D model viewport rendering for LookEveryting (CPU fallback + wgpu).
 
 mod gpu_mesh;
+mod scene;
 mod thumb;
 
 use std::sync::Arc;
 
 use cap_model::MeshData;
 use cap_ui::colors::{Palette, Semantic};
-use egui::{Color32, Pos2, Rect, Response, Sense, Ui, Vec2};
+use egui::{Color32, PointerButton, Pos2, Rect, Response, Sense, Ui, Vec2};
 use glam::{Mat4, Vec3, Vec4};
 
 pub use gpu_mesh::{MeshPaintCallback, MeshRenderResources};
+pub use scene::{MaterialMode, SceneLighting, SceneSettings};
 pub use thumb::render_mesh_thumbnail;
 
 /// Orbit camera around a model centroid.
@@ -55,6 +57,17 @@ impl OrbitCamera {
     pub fn zoom(&mut self, factor: f32) {
         self.distance = (self.distance * factor).clamp(0.2, 50.0);
     }
+
+    pub fn pan_screen(&mut self, dx: f32, dy: f32) {
+        let eye = orbit_eye(self);
+        let target = Vec3::from_array(self.target);
+        let forward = (target - eye).normalize_or_zero();
+        let right = forward.cross(Vec3::Y).normalize_or_zero();
+        let up = right.cross(forward).normalize_or_zero();
+        let scale = self.distance * 0.0025;
+        let delta = right * (-dx * scale) + up * (dy * scale);
+        self.target = (target + delta).to_array();
+    }
 }
 
 /// Viewport background fill mode.
@@ -83,7 +96,16 @@ pub fn draw_mesh_viewport(
     wireframe: bool,
     bg: ViewportBg,
 ) -> Response {
-    draw_mesh_viewport_ex(ui, rect, mesh, camera, wireframe, bg, MeshDrawOpts::default())
+    let mut scene = SceneSettings {
+        material_mode: if wireframe {
+            MaterialMode::Wireframe
+        } else {
+            MaterialMode::Original
+        },
+        bg,
+        ..Default::default()
+    };
+    draw_mesh_viewport_ex(ui, rect, mesh, camera, &mut scene, MeshDrawOpts::default())
 }
 
 pub fn draw_mesh_viewport_ex(
@@ -91,14 +113,13 @@ pub fn draw_mesh_viewport_ex(
     rect: Rect,
     mesh: &MeshData,
     camera: &mut OrbitCamera,
-    wireframe: bool,
-    bg: ViewportBg,
+    scene: &mut SceneSettings,
     opts: MeshDrawOpts,
 ) -> Response {
     let response = ui.allocate_rect(rect, Sense::click_and_drag());
     let painter = ui.painter_at(rect);
 
-    match bg {
+    match scene.bg {
         ViewportBg::Solid => {
             painter.rect_filled(rect, 0.0, Semantic::BG_VIEWPORT);
         }
@@ -118,12 +139,25 @@ pub fn draw_mesh_viewport_ex(
         return response;
     }
 
+    if scene.auto_rotate {
+        let dt = ui.input(|i| i.stable_dt).clamp(0.0, 0.05);
+        camera.yaw += dt * 0.45;
+        ui.ctx().request_repaint();
+    }
+
     if response.dragged() {
         let delta = response.drag_delta();
-        camera.rotate(delta.x * 0.01, delta.y * 0.01);
+        let secondary = ui.input(|i| i.pointer.button_down(PointerButton::Secondary));
+        let middle = ui.input(|i| i.pointer.button_down(PointerButton::Middle));
+        if secondary || middle {
+            camera.pan_screen(delta.x, delta.y);
+        } else {
+            camera.rotate(delta.x * 0.01, delta.y * 0.01);
+        }
     }
     if response.hovered() {
-        let scroll = ui.input(|i| i.smooth_scroll_delta.y + i.raw_scroll_delta.y);
+        // Invert: scroll up �?zoom in (closer).
+        let scroll = -ui.input(|i| i.smooth_scroll_delta.y + i.raw_scroll_delta.y);
         if scroll != 0.0 {
             camera.zoom((1.0 - scroll * 0.002).clamp(0.85, 1.15));
         }
@@ -136,8 +170,10 @@ pub fn draw_mesh_viewport_ex(
         (rect.height() * ppp).round().max(1.0) as u32,
     );
 
+    let wireframe = scene.material_mode == MaterialMode::Wireframe;
     let use_gpu = opts.gpu_available && !wireframe;
     if use_gpu {
+        let dir = scene.lighting.key_dir();
         ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(
             rect,
             MeshPaintCallback {
@@ -146,6 +182,18 @@ pub fn draw_mesh_viewport_ex(
                 size_px,
                 mesh_to_upload: opts.mesh_to_upload,
                 clear_mesh: opts.clear_gpu_mesh,
+                light_dir: [
+                    dir[0],
+                    dir[1],
+                    dir[2],
+                    scene.lighting.key_intensity,
+                ],
+                env: [
+                    scene.lighting.ambient,
+                    scene.lighting.fill,
+                    scene.material_mode.as_shader_code(),
+                    0.0,
+                ],
             },
         ));
     } else {
@@ -173,7 +221,13 @@ pub fn draw_mesh_viewport_ex(
         }
     }
 
-    draw_axis_gizmo(&painter, rect);
+    if scene.show_grid {
+        draw_ground_grid(&painter, camera, rect);
+    }
+    if scene.show_axes {
+        draw_axis_gizmo(&painter, rect);
+    }
+
     response
 }
 
@@ -206,6 +260,28 @@ fn draw_gradient_bg(painter: &egui::Painter, rect: Rect) {
     mesh.add_triangle(i, i + 1, i + 2);
     mesh.add_triangle(i, i + 2, i + 3);
     painter.add(egui::Shape::mesh(mesh));
+}
+
+fn draw_ground_grid(painter: &egui::Painter, camera: &OrbitCamera, rect: Rect) {
+    let mvp = view_proj(camera, rect);
+    let stroke = egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 28));
+    let major = egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 55));
+    for i in -6..=6 {
+        let t = i as f32 * 0.2;
+        let s = if i == 0 { major } else { stroke };
+        if let (Some(a), Some(b)) = (
+            project_vertex([-1.2, 0.0, t], mvp, rect),
+            project_vertex([1.2, 0.0, t], mvp, rect),
+        ) {
+            painter.line_segment([a, b], s);
+        }
+        if let (Some(a), Some(b)) = (
+            project_vertex([t, 0.0, -1.2], mvp, rect),
+            project_vertex([t, 0.0, 1.2], mvp, rect),
+        ) {
+            painter.line_segment([a, b], s);
+        }
+    }
 }
 
 fn view_proj(camera: &OrbitCamera, rect: Rect) -> Mat4 {
@@ -295,84 +371,78 @@ fn draw_solid(painter: &egui::Painter, mesh: &MeshData, projected: &[Option<Pos2
     let ambient = 0.22_f32;
     let mut tris: Vec<(f32, [Pos2; 3], Color32)> = Vec::new();
 
-    let push_tri = |a: usize, b: usize, c: usize| {
+    let push_tri = |a: usize,
+                    b: usize,
+                    c: usize,
+                    out: &mut Vec<(f32, [Pos2; 3], Color32)>|
+     -> Option<()> {
         let va = Vec3::from_array(*mesh.vertices.get(a)?);
         let vb = Vec3::from_array(*mesh.vertices.get(b)?);
         let vc = Vec3::from_array(*mesh.vertices.get(c)?);
-        let pa = projected.get(a).and_then(|p| *p)?;
-        let pb = projected.get(b).and_then(|p| *p)?;
-        let pc = projected.get(c).and_then(|p| *p)?;
-        let normal = (vb - va).cross(vc - va).normalize_or_zero();
-        if normal.length_squared() < f32::EPSILON {
+        let pa = (*projected.get(a)?)?;
+        let pb = (*projected.get(b)?)?;
+        let pc = (*projected.get(c)?)?;
+        let n = (vb - va).cross(vc - va).normalize_or_zero();
+        if n.length_squared() < 1e-8 {
             return None;
         }
-        let intensity = (ambient
-            + normal.dot(key).max(0.0) * 0.55
-            + normal.dot(fill).max(0.0) * 0.25)
-            .clamp(0.12, 1.0);
+        let lit = (ambient + n.dot(key).max(0.0) * 0.65 + n.dot(fill).max(0.0) * 0.2).clamp(0.08, 1.0);
+        let base = mesh.base_color;
         let color = Color32::from_rgb(
-            (Palette::ACCENT.r() as f32 * intensity) as u8,
-            (Palette::ACCENT.g() as f32 * intensity) as u8,
-            (Palette::ACCENT.b() as f32 * intensity + 18.0 * intensity) as u8,
+            ((base[0] * lit) * 255.0) as u8,
+            ((base[1] * lit) * 255.0) as u8,
+            ((base[2] * lit) * 255.0) as u8,
         );
         let depth = (view_depth(va.to_array(), mvp)
             + view_depth(vb.to_array(), mvp)
             + view_depth(vc.to_array(), mvp))
             / 3.0;
-        Some((depth, [pa, pb, pc], color))
+        out.push((depth, [pa, pb, pc], color));
+        Some(())
     };
 
     if mesh.indices.is_empty() {
         for i in (0..mesh.vertices.len()).step_by(3) {
             if i + 2 < mesh.vertices.len() {
-                if let Some(tri) = push_tri(i, i + 1, i + 2) {
-                    tris.push(tri);
-                }
+                let _ = push_tri(i, i + 1, i + 2, &mut tris);
             }
         }
     } else {
         for chunk in mesh.indices.chunks(3) {
-            if chunk.len() < 3 {
-                continue;
-            }
-            if let Some(tri) = push_tri(chunk[0] as usize, chunk[1] as usize, chunk[2] as usize) {
-                tris.push(tri);
+            if chunk.len() >= 3 {
+                let _ = push_tri(
+                    chunk[0] as usize,
+                    chunk[1] as usize,
+                    chunk[2] as usize,
+                    &mut tris,
+                );
             }
         }
     }
 
-    tris.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-
-    let mut egui_mesh = egui::Mesh::default();
+    tris.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     for (_, pts, color) in tris {
-        let base = egui_mesh.vertices.len() as u32;
-        for p in pts {
-            egui_mesh.vertices.push(egui::epaint::Vertex {
-                pos: p,
-                uv: egui::pos2(0.5, 0.5),
-                color,
-            });
-        }
-        egui_mesh.add_triangle(base, base + 1, base + 2);
-    }
-    if !egui_mesh.is_empty() {
-        painter.add(egui::Shape::mesh(egui_mesh));
+        painter.add(egui::Shape::convex_polygon(
+            pts.to_vec(),
+            color,
+            egui::Stroke::NONE,
+        ));
     }
 }
 
 fn draw_axis_gizmo(painter: &egui::Painter, rect: Rect) {
-    let origin = Pos2::new(rect.left() + 24.0, rect.bottom() - 24.0);
-    let len = 16.0_f32;
+    let origin = rect.left_bottom() + Vec2::new(28.0, -28.0);
+    let len = 18.0_f32;
     painter.line_segment(
         [origin, origin + Vec2::new(len, 0.0)],
-        egui::Stroke::new(2.0_f32, Color32::from_rgb(220, 80, 80)),
+        egui::Stroke::new(2.0, Color32::from_rgb(0xEF, 0x44, 0x44)),
     );
     painter.line_segment(
         [origin, origin + Vec2::new(0.0, -len)],
-        egui::Stroke::new(2.0_f32, Color32::from_rgb(80, 200, 120)),
+        egui::Stroke::new(2.0, Color32::from_rgb(0x22, 0xC5, 0x5E)),
     );
     painter.line_segment(
-        [origin, origin + Vec2::new(len * 0.55, len * 0.55)],
-        egui::Stroke::new(2.0_f32, Color32::from_rgb(80, 140, 220)),
+        [origin, origin + Vec2::new(len * 0.55, -len * 0.55)],
+        egui::Stroke::new(2.0, Color32::from_rgb(0x3B, 0x82, 0xF6)),
     );
 }
