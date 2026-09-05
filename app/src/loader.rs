@@ -6,7 +6,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
 
 use cap_core::{classify_extension, MediaKind};
-use cap_image::{decode_full, decode_prefetch, decode_staged, DecodedImage, PREFETCH_EDGE, PREVIEW_EDGE};
+use cap_image::{
+    decode_full, decode_gif_animation, decode_prefetch, decode_staged, AnimFrame, DecodedImage,
+    PREFETCH_EDGE, PREVIEW_EDGE,
+};
 use cap_model::{load_mesh, MeshData, ModelInfo};
 use cap_viewer::OrbitCamera;
 use crossbeam_channel::{Receiver, Sender, TryRecvError, unbounded};
@@ -40,7 +43,10 @@ pub fn paths_equal(a: &Path, b: &Path) -> bool {
 
 /// Result of a background load job.
 pub enum LoadedPayload {
-    Image(DecodedImage),
+    Image {
+        decoded: DecodedImage,
+        animation: Vec<AnimFrame>,
+    },
     Model {
         info: ModelInfo,
         mesh: Option<MeshData>,
@@ -163,6 +169,7 @@ fn media_worker_loop(jobs: Receiver<MediaJob>, tx: Sender<LoadMessage>) {
 
 fn load_media_job(path: PathBuf, generation: u64, tx: &Sender<LoadMessage>) {
     if classify_extension(&path) == Some(MediaKind::Image) {
+        let animation = decode_gif_animation(&path).unwrap_or_default();
         match decode_staged(&path, PREVIEW_EDGE, cap_image::MAX_VIEW_EDGE) {
             Ok((Some(preview), view)) => {
                 let _ = tx.send(LoadMessage::Preview {
@@ -173,14 +180,20 @@ fn load_media_job(path: PathBuf, generation: u64, tx: &Sender<LoadMessage>) {
                 let _ = tx.send(LoadMessage::Ready {
                     path,
                     generation,
-                    result: Ok(LoadedPayload::Image(view)),
+                    result: Ok(LoadedPayload::Image {
+                        decoded: view,
+                        animation,
+                    }),
                 });
             }
             Ok((None, view)) => {
                 let _ = tx.send(LoadMessage::Ready {
                     path,
                     generation,
-                    result: Ok(LoadedPayload::Image(view)),
+                    result: Ok(LoadedPayload::Image {
+                        decoded: view,
+                        animation,
+                    }),
                 });
             }
             Err(err) => {
@@ -204,7 +217,10 @@ fn load_media_job(path: PathBuf, generation: u64, tx: &Sender<LoadMessage>) {
 
 fn load_full_res_job(path: PathBuf, generation: u64, tx: &Sender<LoadMessage>) {
     let result = decode_full(&path)
-        .map(LoadedPayload::Image)
+        .map(|decoded| LoadedPayload::Image {
+            decoded,
+            animation: Vec::new(),
+        })
         .map_err(|e| e.to_string());
     let _ = tx.send(LoadMessage::Ready {
         path,
@@ -221,7 +237,10 @@ fn load_prefetch_job(path: PathBuf, tx: &Sender<LoadMessage>) {
         let _ = tx.send(LoadMessage::Ready {
             path,
             generation: u64::MAX,
-            result: Ok(LoadedPayload::Image(decoded)),
+            result: Ok(LoadedPayload::Image {
+                decoded,
+                animation: Vec::new(),
+            }),
         });
     }
 }

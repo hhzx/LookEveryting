@@ -1,5 +1,7 @@
 //! egui UI rendering for LookEveryting.
 
+use std::time::Instant;
+
 use cap_core::all_supported_filter;
 use cap_i18n::Locale;
 use cap_ui::colors::{Palette, Semantic};
@@ -9,15 +11,16 @@ use cap_ui::widgets::{ghost_button, icon_button, paint_floating_panel, panel_fra
 use cap_viewer::draw_mesh_viewport;
 use egui::{pos2, vec2, Align2, Color32, Frame, RichText, Sense, Ui, Vec2};
 
-use crate::app::{LoadedMedia, LookApp};
+use crate::app::{ErrorAction, LoadedMedia, LookApp};
 use crate::image_viewport::interact_image_viewport;
 use crate::thumbnails::{draw_thumbnail_strip, ensure_thumbnails};
 
 pub fn draw(app: &mut LookApp, ctx: &egui::Context) {
-    app.maybe_hide_toolbar();
+    app.maybe_hide_toolbar(ctx);
     app.ensure_texture(ctx);
     app.tick_video(ctx);
     ensure_thumbnails(app, ctx);
+    update_drag_hover(app, ctx);
 
     let screen = ctx.screen_rect();
     let layout = app.layout_mode(screen.width());
@@ -54,9 +57,17 @@ pub fn draw(app: &mut LookApp, ctx: &egui::Context) {
     egui::CentralPanel::default()
         .frame(Frame::NONE.fill(Semantic::BG_VIEWPORT))
         .show(ctx, |ui| {
+            if app.drag_hover {
+                ui.painter().rect_stroke(
+                    ui.max_rect().shrink(4.0),
+                    8.0,
+                    egui::Stroke::new(2.0_f32, Palette::ACCENT),
+                    egui::StrokeKind::Outside,
+                );
+            }
             viewport(app, ui);
             draw_status_bar(app, ui);
-            if app.toolbar_visible && !fullscreen {
+            if app.toolbar_visible {
                 draw_floating_toolbar_overlay(app, ui);
             }
         });
@@ -115,15 +126,45 @@ pub fn draw(app: &mut LookApp, ctx: &egui::Context) {
             .show(ctx, |ui| settings_panel(app, ui));
     }
 
+    if app.shortcuts_open {
+        egui::Window::new(app.i18n.t("shortcuts-title"))
+            .collapsible(false)
+            .resizable(true)
+            .default_width(360.0)
+            .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
+            .show(ctx, |ui| shortcuts_panel(app, ui));
+    }
+
     if let Some(err) = app.error.clone() {
         egui::Window::new(app.i18n.t("toast-open-failed"))
             .collapsible(false)
             .anchor(Align2::CENTER_CENTER, vec2(0.0, -80.0))
             .show(ctx, |ui| {
-                ui.label(err);
-                if ui.button(app.i18n.t("common-close")).clicked() {
-                    app.error = None;
-                }
+                ui.label(&err);
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let actions = app.error_actions.clone();
+                    for action in actions {
+                        match action {
+                            ErrorAction::OpenExternally => {
+                                if ui.button(app.i18n.t("error-open-system")).clicked() {
+                                    app.open_current_externally();
+                                    app.clear_error();
+                                }
+                            }
+                            ErrorAction::Dismiss => {
+                                if ui.button(app.i18n.t("common-close")).clicked() {
+                                    app.clear_error();
+                                }
+                            }
+                        }
+                    }
+                    if app.error_actions.is_empty()
+                        && ui.button(app.i18n.t("common-close")).clicked()
+                    {
+                        app.clear_error();
+                    }
+                });
             });
     }
 
@@ -283,10 +324,10 @@ fn viewport(app: &mut LookApp, ui: &mut Ui) {
     match &mut app.media {
         None => empty_state(app, ui, rect),
         Some(LoadedMedia::Loading { .. }) => {
-            draw_loading_state(app, ui, rect);
+            draw_loading_or_held(app, ui, rect);
         }
         Some(LoadedMedia::Image { .. }) => {
-            draw_loading_state(app, ui, rect);
+            draw_loading_or_held(app, ui, rect);
         }
         Some(LoadedMedia::Video {
             info,
@@ -310,6 +351,7 @@ fn viewport(app: &mut LookApp, ui: &mut Ui) {
                 *position_fraction,
             );
             draw_video_view(app, ui, rect, args);
+            draw_play_flash(app, ui, rect);
         }
         Some(LoadedMedia::Model {
             info,
@@ -319,7 +361,29 @@ fn viewport(app: &mut LookApp, ui: &mut Ui) {
             camera,
         }) => {
             if let Some(mesh) = mesh.as_ref() {
+                let vert_count = mesh.vertices.len();
+                let tri_count = if mesh.indices.is_empty() {
+                    mesh.vertices.len() / 3
+                } else {
+                    mesh.indices.len() / 3
+                };
                 draw_mesh_viewport(ui, rect, mesh, camera, *wireframe);
+                let hud = format!(
+                    "{} · {}",
+                    app.i18n
+                        .t("model-hud-verts")
+                        .replace("{count}", &vert_count.to_string()),
+                    app.i18n
+                        .t("model-hud-tris")
+                        .replace("{count}", &tri_count.to_string()),
+                );
+                ui.painter().text(
+                    rect.left_top() + vec2(12.0, 8.0),
+                    Align2::LEFT_TOP,
+                    hud,
+                    egui::FontId::monospace(11.0),
+                    Semantic::FG_MUTED,
+                );
                 let hint = app.i18n.t("model-hint");
                 ui.painter().text(
                     rect.left_bottom() + vec2(12.0, -8.0),
@@ -497,6 +561,37 @@ fn format_time(secs: f32) -> String {
     } else {
         format!("{m}:{s:02}")
     }
+}
+
+fn format_system_time(time: std::time::SystemTime) -> String {
+    use std::time::UNIX_EPOCH;
+    let Ok(dur) = time.duration_since(UNIX_EPOCH) else {
+        return "—".into();
+    };
+    let secs = dur.as_secs() as i64;
+    // Format as UTC YYYY-MM-DD HH:MM without chrono dependency.
+    const DAY: i64 = 86_400;
+    let days = secs.div_euclid(DAY);
+    let tod = secs.rem_euclid(DAY) as u32;
+    let hour = tod / 3600;
+    let min = (tod % 3600) / 60;
+    let (y, m, d) = civil_from_days(days);
+    format!("{y:04}-{m:02}-{d:02} {hour:02}:{min:02}")
+}
+
+/// Howard Hinnant's civil_from_days (proleptic Gregorian).
+fn civil_from_days(days: i64) -> (i32, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = (yoe as i64) + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y as i32, m, d)
 }
 
 fn draw_status_bar(app: &LookApp, ui: &mut Ui) {
@@ -679,6 +774,20 @@ fn floating_toolbar(app: &mut LookApp, ui: &mut Ui, viewport_size: Vec2) {
                         app.step_video_frame(true, ui.ctx());
                         app.touch();
                     }
+                    let mute_label = if app.muted {
+                        app.i18n.t("unmute")
+                    } else {
+                        app.i18n.t("mute")
+                    };
+                    if icon_button(ui, if app.muted { "🔇" } else { "🔊" }, mute_label).clicked()
+                    {
+                        app.toggle_mute();
+                    }
+                    ui.add(
+                        egui::Slider::new(&mut app.volume, 0.0..=1.0)
+                            .show_value(false)
+                            .text(app.i18n.t("volume")),
+                    );
                 }
             Some(LoadedMedia::Model { .. }) => {
                 if icon_button(ui, "3D", app.i18n.t("model-solid")).clicked() {
@@ -704,6 +813,18 @@ fn floating_toolbar(app: &mut LookApp, ui: &mut Ui, viewport_size: Vec2) {
             app.info_open = !app.info_open;
             app.touch();
         }
+        let slide_label = if app.slideshow_active {
+            app.i18n.t("slideshow-stop")
+        } else {
+            app.i18n.t("slideshow-start")
+        };
+        if icon_button(ui, "▶▶", slide_label).clicked() {
+            app.toggle_slideshow();
+        }
+        if icon_button(ui, "?", app.i18n.t("shortcuts-title")).clicked() {
+            app.shortcuts_open = !app.shortcuts_open;
+            app.touch();
+        }
     });
 }
 
@@ -722,12 +843,32 @@ fn info_panel(app: &mut LookApp, ui: &mut Ui) {
             native_height,
             ..
         }) => {
-            ui.label(format!(
-                "{} × {} ({:.2} MP)",
-                native_width,
-                native_height,
-                (*native_width as f64 * *native_height as f64 / 1_000_000.0)
-            ));
+            if let Some(meta) = &app.image_meta {
+                ui.label(format!(
+                    "{} × {} ({:.2} MP)",
+                    meta.width,
+                    meta.height,
+                    meta.megapixels()
+                ));
+                ui.label(format!("{} · {}", meta.format, meta.file_size_label()));
+                ui.label(format!("Modified: {}", format_system_time(meta.modified)));
+                if let Some(make) = &meta.camera_make {
+                    ui.label(format!("Make: {make}"));
+                }
+                if let Some(model) = &meta.camera_model {
+                    ui.label(format!("Model: {model}"));
+                }
+                if let Some(dt) = &meta.datetime {
+                    ui.label(format!("Taken: {dt}"));
+                }
+            } else {
+                ui.label(format!(
+                    "{} × {} ({:.2} MP)",
+                    native_width,
+                    native_height,
+                    (*native_width as f64 * *native_height as f64 / 1_000_000.0)
+                ));
+            }
             if width != native_width || height != native_height {
                 ui.label(format!("Display buffer: {width} × {height}"));
             }
@@ -865,6 +1006,18 @@ fn handle_shortcuts(app: &mut LookApp, ctx: &egui::Context) {
         if is_video && i.key_pressed(egui::Key::Space) {
             app.toggle_video_playback();
         }
+        if !is_video && i.key_pressed(egui::Key::Space) {
+            app.toggle_slideshow();
+        }
+        if is_video && i.key_pressed(egui::Key::M) {
+            app.toggle_mute();
+        }
+        if i.key_pressed(egui::Key::Questionmark)
+            || (i.modifiers.shift && i.key_pressed(egui::Key::Slash))
+        {
+            app.shortcuts_open = !app.shortcuts_open;
+            app.touch();
+        }
         if is_video && i.key_pressed(egui::Key::Comma) {
             app.step_video_frame(false, ctx);
             app.touch();
@@ -891,10 +1044,14 @@ fn handle_shortcuts(app: &mut LookApp, ctx: &egui::Context) {
         if i.key_pressed(egui::Key::Escape) && app.is_fullscreen() {
             app.toggle_fullscreen(ctx);
         } else if i.key_pressed(egui::Key::Escape) {
-            if app.settings_open {
+            if app.shortcuts_open {
+                app.shortcuts_open = false;
+            } else if app.settings_open {
                 app.settings_open = false;
             } else if app.info_open {
                 app.info_open = false;
+            } else if app.slideshow_active {
+                app.slideshow_active = false;
             }
         }
         if is_image && (i.key_pressed(egui::Key::Num0) || i.key_pressed(egui::Key::F)) {
@@ -921,6 +1078,97 @@ fn handle_shortcuts(app: &mut LookApp, ctx: &egui::Context) {
             app.settings_open = !app.settings_open;
         }
     });
+}
+
+fn update_drag_hover(app: &mut LookApp, ctx: &egui::Context) {
+    app.drag_hover = ctx.input(|i| !i.raw.hovered_files.is_empty());
+}
+
+fn shortcuts_panel(app: &mut LookApp, ui: &mut Ui) {
+    ui.label(RichText::new(app.i18n.t("help-hint")).color(Semantic::FG_MUTED).size(12.0));
+    ui.separator();
+    let rows = [
+        ("← → ↑ ↓", "Navigate files"),
+        ("Space", "Slideshow / Play-Pause"),
+        ("F / 0", "Fit"),
+        ("1", "Actual size 100%"),
+        ("F11", "Fullscreen"),
+        ("I", "Info panel"),
+        ("M", "Mute (video)"),
+        ("? ", "This help"),
+        ("Esc", "Close overlays / exit fullscreen"),
+    ];
+    for (key, desc) in rows {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(key).monospace().strong());
+            ui.label(desc);
+        });
+    }
+    ui.add_space(8.0);
+    if ui.button(app.i18n.t("common-close")).clicked() {
+        app.shortcuts_open = false;
+    }
+}
+
+fn draw_loading_or_held(app: &LookApp, ui: &mut Ui, rect: egui::Rect) {
+    if let Some(held) = &app.held_frame {
+        let avail = rect.size();
+        let scale = (avail.x / held.size.x)
+            .min(avail.y / held.size.y)
+            .max(0.01);
+        let size = held.size * scale;
+        let img_rect = egui::Rect::from_center_size(rect.center(), size);
+        ui.painter().image(
+            held.texture.id(),
+            img_rect,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            Color32::from_white_alpha(200),
+        );
+        // Corner spinner only — never cover the held frame.
+        draw_corner_spinner(app, ui, rect);
+        return;
+    }
+    draw_loading_state(app, ui, rect);
+}
+
+fn draw_corner_spinner(app: &LookApp, ui: &mut Ui, rect: egui::Rect) {
+    let t = app.load_started.elapsed().as_secs_f32();
+    let angle = t * 4.0;
+    let origin = rect.right_top() + vec2(-28.0, 28.0);
+    for i in 0..8 {
+        let a = angle + i as f32 * std::f32::consts::FRAC_PI_4;
+        let alpha = (255.0 * (1.0 - i as f32 / 8.0)).max(40.0) as u8;
+        let p = origin + vec2(a.cos(), a.sin()) * 8.0;
+        ui.painter().circle_filled(
+            p,
+            2.0,
+            Color32::from_rgba_unmultiplied(
+                Palette::ACCENT.r(),
+                Palette::ACCENT.g(),
+                Palette::ACCENT.b(),
+                alpha,
+            ),
+        );
+    }
+    ui.ctx().request_repaint();
+}
+
+fn draw_play_flash(app: &LookApp, ui: &mut Ui, rect: egui::Rect) {
+    let Some(until) = app.play_flash_until else {
+        return;
+    };
+    if Instant::now() >= until {
+        return;
+    }
+    let label = if app.video_is_playing() { "▶" } else { "⏸" };
+    ui.painter().text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        label,
+        egui::FontId::proportional(48.0),
+        Color32::from_white_alpha(180),
+    );
+    ui.ctx().request_repaint();
 }
 
 fn draw_loading_state(app: &LookApp, ui: &mut Ui, rect: egui::Rect) {

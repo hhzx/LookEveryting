@@ -3,10 +3,11 @@
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
+use std::time::SystemTime;
 
 use cap_core::MediaKind;
 use image::codecs::jpeg::JpegDecoder;
-use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader};
+use image::{AnimationDecoder, DynamicImage, ImageDecoder, ImageFormat, ImageReader};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -177,6 +178,50 @@ pub fn decode_full(path: &Path) -> Result<DecodedImage, ImageError> {
     DecodedImage::from_path(path)
 }
 
+/// One frame of an animated GIF (or similar).
+#[derive(Debug, Clone)]
+pub struct AnimFrame {
+    pub image: DecodedImage,
+    pub delay_ms: u32,
+}
+
+/// Decode GIF animation frames. Returns empty if not a multi-frame GIF.
+pub fn decode_gif_animation(path: &Path) -> Result<Vec<AnimFrame>, ImageError> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase());
+    if ext.as_deref() != Some("gif") {
+        return Ok(Vec::new());
+    }
+    let file = File::open(path)?;
+    let decoder = image::codecs::gif::GifDecoder::new(BufReader::new(file))?;
+    let mut frames = Vec::new();
+    let (native_w, native_h) = decoder.dimensions();
+    for frame in decoder.into_frames() {
+        let frame = frame?;
+        let delay = frame.delay().numer_denom_ms();
+        let delay_ms = if delay.1 == 0 {
+            100
+        } else {
+            ((delay.0 as u64 * 1000) / delay.1 as u64).max(20) as u32
+        };
+        let rgba = frame.into_buffer();
+        let (w, h) = rgba.dimensions();
+        frames.push(AnimFrame {
+            image: DecodedImage {
+                width: w,
+                height: h,
+                rgba: rgba.into_raw(),
+                native_width: native_w,
+                native_height: native_h,
+            },
+            delay_ms,
+        });
+    }
+    Ok(frames)
+}
+
 /// Load image dimensions without full decode.
 pub fn probe_dimensions(path: &Path) -> Result<(u32, u32), ImageError> {
     if is_jpeg(path) {
@@ -186,6 +231,113 @@ pub fn probe_dimensions(path: &Path) -> Result<(u32, u32), ImageError> {
     }
     let reader = ImageReader::open(path)?.with_guessed_format()?;
     Ok(reader.into_dimensions()?)
+}
+
+/// Lightweight file / EXIF-lite metadata for the info panel.
+#[derive(Debug, Clone)]
+pub struct ImageMeta {
+    pub width: u32,
+    pub height: u32,
+    pub file_size: u64,
+    pub modified: SystemTime,
+    pub format: String,
+    pub camera_make: Option<String>,
+    pub camera_model: Option<String>,
+    pub datetime: Option<String>,
+}
+
+impl ImageMeta {
+    pub fn file_size_label(&self) -> String {
+        format_bytes(self.file_size)
+    }
+
+    pub fn megapixels(&self) -> f32 {
+        (self.width as f64 * self.height as f64 / 1_000_000.0) as f32
+    }
+}
+
+/// Read native dimensions, file stats, and optional EXIF camera fields.
+pub fn read_image_meta(path: &Path) -> Result<ImageMeta, ImageError> {
+    if cap_core::classify_extension(path) != Some(MediaKind::Image) {
+        return Err(ImageError::UnsupportedFormat);
+    }
+
+    let (width, height) = probe_dimensions(path)?;
+    let meta = std::fs::metadata(path)?;
+    let file_size = meta.len();
+    let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+    let format = guess_format(path)
+        .map(format_label)
+        .or_else(|| {
+            path.extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_ascii_uppercase())
+        })
+        .unwrap_or_else(|| "IMAGE".to_string());
+
+    let (camera_make, camera_model, datetime) = read_exif_lite(path);
+
+    Ok(ImageMeta {
+        width,
+        height,
+        file_size,
+        modified,
+        format,
+        camera_make,
+        camera_model,
+        datetime,
+    })
+}
+
+fn format_label(format: ImageFormat) -> String {
+    match format {
+        ImageFormat::Jpeg => "JPEG".into(),
+        ImageFormat::Png => "PNG".into(),
+        ImageFormat::Gif => "GIF".into(),
+        ImageFormat::WebP => "WEBP".into(),
+        ImageFormat::Bmp => "BMP".into(),
+        ImageFormat::Tiff => "TIFF".into(),
+        ImageFormat::Ico => "ICO".into(),
+        ImageFormat::Avif => "AVIF".into(),
+        _ => format!("{format:?}").to_ascii_uppercase(),
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    let b = bytes as f64;
+    if b >= GB {
+        format!("{:.2} GB", b / GB)
+    } else if b >= MB {
+        format!("{:.2} MB", b / MB)
+    } else if b >= KB {
+        format!("{:.1} KB", b / KB)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+fn read_exif_lite(path: &Path) -> (Option<String>, Option<String>, Option<String>) {
+    let Ok(file) = File::open(path) else {
+        return (None, None, None);
+    };
+    let mut reader = BufReader::new(file);
+    let Ok(exif) = exif::Reader::new().read_from_container(&mut reader) else {
+        return (None, None, None);
+    };
+
+    let field = |tag: exif::Tag| {
+        exif.get_field(tag, exif::In::PRIMARY)
+            .map(|f| f.display_value().with_unit(&exif).to_string())
+            .map(|s| s.trim().trim_matches('"').to_string())
+            .filter(|s| !s.is_empty())
+    };
+
+    let datetime = field(exif::Tag::DateTimeOriginal).or_else(|| field(exif::Tag::DateTime));
+
+    (field(exif::Tag::Make), field(exif::Tag::Model), datetime)
 }
 
 fn is_jpeg(path: &Path) -> bool {
@@ -274,5 +426,18 @@ mod tests {
         let (_, view) = decode_staged(&path, 512, 256).unwrap();
         assert!(view.is_capped());
         assert_eq!(view.native_width, 800);
+    }
+
+    #[test]
+    fn reads_image_meta() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sample.png");
+        sample_png(&path);
+        let meta = read_image_meta(&path).unwrap();
+        assert_eq!(meta.width, 4);
+        assert_eq!(meta.height, 2);
+        assert_eq!(meta.format, "PNG");
+        assert!(meta.file_size > 0);
+        assert!(meta.camera_make.is_none());
     }
 }

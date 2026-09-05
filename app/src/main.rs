@@ -58,11 +58,22 @@ impl eframe::App for LookEverytingApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.inner.poll_loader();
         self.inner.poll_video(ctx);
+        self.inner.tick_slideshow();
+        self.inner.tick_animation(ctx);
         ui::draw(&mut self.inner, ctx);
         self.inner.flush_settings_if_dirty();
+        let animating = matches!(
+            &self.inner.media,
+            Some(app::LoadedMedia::Image {
+                animation: Some(_),
+                ..
+            })
+        );
         let ms = if self.inner.is_loading()
             || self.inner.last_interaction.elapsed().as_millis() < 500
             || self.inner.video_is_playing()
+            || self.inner.slideshow_active
+            || animating
         {
             6
         } else {

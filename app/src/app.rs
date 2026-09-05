@@ -2,13 +2,14 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use cap_core::{classify_extension, load_settings, save_settings, AppSettings, MediaKind};
 use cap_i18n::{I18n, Locale};
-use cap_image::DecodedImage;
+use cap_image::{DecodedImage, ImageMeta};
 use cap_model::{MeshData, ModelInfo};
 use cap_ui::layout::{LayoutMode, ViewerMode};
+use cap_ui::motion::behavior as motion_behavior;
 use cap_video::VideoInfo;
 use cap_viewer::OrbitCamera;
 use egui::{ColorImage, TextureHandle, Vec2};
@@ -30,6 +31,7 @@ pub enum LoadedMedia {
         full_res_loading: bool,
         rgba: Option<Vec<u8>>,
         texture: Option<TextureHandle>,
+        animation: Option<GifPlayback>,
     },
     Video {
         info: VideoInfo,
@@ -78,6 +80,8 @@ pub struct LookApp {
     pub pan: Vec2,
     pub toast: Option<String>,
     pub error: Option<String>,
+    /// Optional recovery actions for the current error (open externally, etc.).
+    pub error_actions: Vec<ErrorAction>,
     pub thumbnails: ThumbnailCache,
     pub association_message: Option<String>,
     pub thumb_scroll_synced_index: Option<usize>,
@@ -89,6 +93,38 @@ pub struct LookApp {
     pub load_started: Instant,
     pub settings_dirty: bool,
     pub thumb_queue_cursor: usize,
+    pub image_meta: Option<ImageMeta>,
+    pub slideshow_active: bool,
+    pub slideshow_interval: Duration,
+    pub slideshow_last_tick: Instant,
+    /// Previous image held on screen while the next file loads (no black flash).
+    pub held_frame: Option<HeldFrame>,
+    pub shortcuts_open: bool,
+    pub volume: f32,
+    pub muted: bool,
+    pub drag_hover: bool,
+    pub play_flash_until: Option<Instant>,
+    pub first_run_hint_shown: bool,
+}
+
+/// Texture kept visible during an image-to-image transition.
+#[derive(Clone)]
+pub struct HeldFrame {
+    pub texture: TextureHandle,
+    pub size: Vec2,
+}
+
+#[derive(Debug, Clone)]
+pub enum ErrorAction {
+    OpenExternally,
+    Dismiss,
+}
+
+/// In-memory GIF (or multi-frame) playback state.
+pub struct GifPlayback {
+    pub frames: Vec<cap_image::AnimFrame>,
+    pub index: usize,
+    pub last_tick: Instant,
 }
 
 impl LookApp {
@@ -113,6 +149,7 @@ impl LookApp {
             pan: Vec2::ZERO,
             toast: None,
             error: None,
+            error_actions: Vec::new(),
             thumbnails: ThumbnailCache::new(),
             association_message: None,
             thumb_scroll_synced_index: None,
@@ -124,6 +161,17 @@ impl LookApp {
             load_started: Instant::now(),
             settings_dirty: false,
             thumb_queue_cursor: 0,
+            image_meta: None,
+            slideshow_active: false,
+            slideshow_interval: Duration::from_secs(3),
+            slideshow_last_tick: Instant::now(),
+            held_frame: None,
+            shortcuts_open: false,
+            volume: 1.0,
+            muted: false,
+            drag_hover: false,
+            play_flash_until: None,
+            first_run_hint_shown: false,
         }
     }
 
@@ -132,15 +180,89 @@ impl LookApp {
         self.toolbar_visible = true;
     }
 
-    pub fn maybe_hide_toolbar(&mut self) {
-        if !self.settings.toolbar_auto_hide {
+    pub fn maybe_hide_toolbar(&mut self, ctx: &egui::Context) {
+        if !self.settings.toolbar_auto_hide && !self.is_fullscreen() {
+            self.toolbar_visible = true;
             return;
         }
-        if self.viewer_mode == ViewerMode::Immersive
-            || self.last_interaction.elapsed().as_millis() > 3000
+        let screen = ctx.screen_rect();
+        let pointer = ctx.input(|i| i.pointer.hover_pos());
+        let near_bottom = pointer.is_some_and(|p| {
+            p.y >= screen.bottom() - motion_behavior::TOOLBAR_REVEAL_ZONE
+        });
+        let near_top = pointer.is_some_and(|p| p.y <= screen.top() + 48.0);
+        if near_bottom || near_top {
+            self.toolbar_visible = true;
+            return;
+        }
+        let hide_ms = motion_behavior::TOOLBAR_AUTO_HIDE_MS as u128;
+        if self.is_fullscreen()
+            || self.viewer_mode == ViewerMode::Immersive
+            || self.last_interaction.elapsed().as_millis() > hide_ms
         {
             self.toolbar_visible = false;
         }
+    }
+
+    pub fn set_error(&mut self, message: String, actions: Vec<ErrorAction>) {
+        self.error = Some(message);
+        self.error_actions = actions;
+    }
+
+    pub fn clear_error(&mut self) {
+        self.error = None;
+        self.error_actions.clear();
+    }
+
+    pub fn open_current_externally(&self) {
+        if let Some(path) = &self.current_path {
+            let _ = open::that(path);
+        }
+    }
+
+    pub fn stash_held_frame(&mut self) {
+        if let Some(LoadedMedia::Image {
+            texture: Some(tex),
+            width,
+            height,
+            ..
+        }) = &self.media
+        {
+            self.held_frame = Some(HeldFrame {
+                texture: tex.clone(),
+                size: Vec2::new(*width as f32, *height as f32),
+            });
+        } else if let Some(LoadedMedia::Video {
+            texture: Some(tex), ..
+        }) = &self.media
+        {
+            let [w, h] = tex.size();
+            self.held_frame = Some(HeldFrame {
+                texture: tex.clone(),
+                size: Vec2::new(w as f32, h as f32),
+            });
+        }
+    }
+
+    pub fn clear_held_frame(&mut self) {
+        self.held_frame = None;
+    }
+
+    pub fn effective_volume(&self) -> f32 {
+        if self.muted {
+            0.0
+        } else {
+            self.volume.clamp(0.0, 1.0)
+        }
+    }
+
+    pub fn toggle_mute(&mut self) {
+        self.muted = !self.muted;
+        self.touch();
+    }
+
+    pub fn flash_play_pause(&mut self) {
+        self.play_flash_until = Some(Instant::now() + Duration::from_millis(400));
     }
 
     pub fn flush_settings_if_dirty(&mut self) {
@@ -160,7 +282,8 @@ impl LookApp {
             return;
         }
         self.touch();
-        self.error = None;
+        self.clear_error();
+        self.stash_held_frame();
 
         if let Some(parent) = path.parent() {
             self.settings.last_directory = Some(parent.to_path_buf());
@@ -171,6 +294,11 @@ impl LookApp {
         self.current_path = Some(path.clone());
         self.load_generation = next_generation();
         self.thumb_queue_cursor = self.current_index;
+        self.image_meta = if classify_extension(&path) == Some(MediaKind::Image) {
+            cap_image::read_image_meta(&path).ok()
+        } else {
+            None
+        };
 
         if classify_extension(&path) == Some(MediaKind::Video) {
             let info = VideoInfo::from_path(&path).unwrap_or_else(|_| VideoInfo {
@@ -185,6 +313,7 @@ impl LookApp {
                 duration_secs: 0.0,
                 width: 0,
                 height: 0,
+                hw_decode_available: cfg!(windows),
             });
             self.video_engine.open(path.clone());
             self.media = Some(LoadedMedia::Video {
@@ -198,9 +327,11 @@ impl LookApp {
                 position_fraction: 0.0,
             });
             self.viewer_mode = ViewerMode::Viewer;
+            self.clear_held_frame();
             return;
         }
 
+        // Hold previous frame while loading — avoids black flash (EX-1).
         self.media = Some(LoadedMedia::Loading { path: path.clone() });
         self.load_started = Instant::now();
 
@@ -216,11 +347,13 @@ impl LookApp {
                     full_res_loading: false,
                     rgba: None,
                     texture: Some(tex),
+                    animation: None,
                 });
                 self.viewer_mode = ViewerMode::Viewer;
+                self.clear_held_frame();
                 return;
             }
-            self.apply_image(cached, false);
+            self.apply_image(cached, false, Vec::new());
             return;
         }
 
@@ -247,7 +380,7 @@ impl LookApp {
                     if current.as_ref().is_some_and(|c| paths_equal(c, &path))
                         && !matches!(self.media, Some(LoadedMedia::Image { .. }))
                     {
-                        self.apply_image(decoded, false);
+                        self.apply_image(decoded, false, Vec::new());
                     }
                 }
                 LoadMessage::Ready {
@@ -259,13 +392,13 @@ impl LookApp {
                         continue;
                     }
                     if gen == u64::MAX {
-                        if let Ok(LoadedPayload::Image(decoded)) = &result {
+                        if let Ok(LoadedPayload::Image { decoded, .. }) = &result {
                             self.cache_image(path, decoded.clone());
                         }
                         continue;
                     }
                     if current.as_ref().is_none_or(|c| !paths_equal(c, &path)) {
-                        if let Ok(LoadedPayload::Image(decoded)) = &result {
+                        if let Ok(LoadedPayload::Image { decoded, .. }) = &result {
                             self.cache_image(path, decoded.clone());
                         }
                         continue;
@@ -273,8 +406,12 @@ impl LookApp {
                     match result {
                         Ok(payload) => self.apply_payload(path, payload),
                         Err(err) => {
-                            self.error = Some(err);
+                            self.set_error(
+                                err,
+                                vec![ErrorAction::OpenExternally, ErrorAction::Dismiss],
+                            );
                             self.media = None;
+                            self.clear_held_frame();
                         }
                     }
                 }
@@ -343,8 +480,12 @@ impl LookApp {
                     }
                 }
                 VideoEvent::Error(err) => {
-                    self.error = Some(err);
+                    self.set_error(
+                        err,
+                        vec![ErrorAction::OpenExternally, ErrorAction::Dismiss],
+                    );
                     self.media = None;
+                    self.clear_held_frame();
                 }
             }
         }
@@ -369,10 +510,10 @@ impl LookApp {
 
     fn apply_payload(&mut self, path: PathBuf, payload: LoadedPayload) {
         match payload {
-            LoadedPayload::Image(decoded) => {
+            LoadedPayload::Image { decoded, animation } => {
                 self.cache_image(path, decoded.clone());
                 let upgrade = matches!(self.media, Some(LoadedMedia::Image { .. }));
-                self.apply_image(decoded, upgrade);
+                self.apply_image(decoded, upgrade, animation);
             }
             LoadedPayload::Model {
                 info,
@@ -380,7 +521,10 @@ impl LookApp {
                 camera,
             } => {
                 if mesh.is_none() {
-                    self.error = Some(self.i18n.t("toast-open-failed").to_string());
+                    self.set_error(
+                        self.i18n.t("toast-open-failed").to_string(),
+                        vec![ErrorAction::OpenExternally, ErrorAction::Dismiss],
+                    );
                 }
                 self.media = Some(LoadedMedia::Model {
                     info,
@@ -390,6 +534,7 @@ impl LookApp {
                     camera,
                 });
                 self.viewer_mode = ViewerMode::Viewer;
+                self.clear_held_frame();
             }
         }
     }
@@ -401,7 +546,21 @@ impl LookApp {
         }
     }
 
-    fn apply_image(&mut self, decoded: DecodedImage, upgrade: bool) {
+    fn apply_image(
+        &mut self,
+        decoded: DecodedImage,
+        upgrade: bool,
+        animation: Vec<cap_image::AnimFrame>,
+    ) {
+        let anim = if animation.len() > 1 {
+            Some(GifPlayback {
+                frames: animation,
+                index: 0,
+                last_tick: Instant::now(),
+            })
+        } else {
+            None
+        };
         if upgrade {
             if let Some(LoadedMedia::Image {
                 width,
@@ -411,6 +570,7 @@ impl LookApp {
                 full_res_loading,
                 rgba,
                 texture,
+                animation: slot,
             }) = &mut self.media
             {
                 *width = decoded.width;
@@ -420,8 +580,12 @@ impl LookApp {
                 *full_res_loading = false;
                 *rgba = Some(decoded.rgba);
                 *texture = None;
-                return;
+                if anim.is_some() {
+                    *slot = anim;
+                }
             }
+            self.clear_held_frame();
+            return;
         }
         self.media = Some(LoadedMedia::Image {
             width: decoded.width,
@@ -431,11 +595,44 @@ impl LookApp {
             full_res_loading: false,
             rgba: Some(decoded.rgba),
             texture: None,
+            animation: anim,
         });
         self.fit_mode = true;
         self.zoom = 1.0;
         self.pan = Vec2::ZERO;
         self.viewer_mode = ViewerMode::Viewer;
+        self.clear_held_frame();
+    }
+
+    /// Advance GIF / multi-frame animation when present.
+    pub fn tick_animation(&mut self, ctx: &egui::Context) {
+        let Some(LoadedMedia::Image {
+            animation: Some(anim),
+            width,
+            height,
+            rgba,
+            texture,
+            ..
+        }) = &mut self.media
+        else {
+            return;
+        };
+        if anim.frames.len() < 2 {
+            return;
+        }
+        let delay = Duration::from_millis(anim.frames[anim.index].delay_ms as u64);
+        if anim.last_tick.elapsed() < delay {
+            ctx.request_repaint_after(delay.saturating_sub(anim.last_tick.elapsed()));
+            return;
+        }
+        anim.last_tick = Instant::now();
+        anim.index = (anim.index + 1) % anim.frames.len();
+        let frame = &anim.frames[anim.index];
+        *width = frame.image.width;
+        *height = frame.image.height;
+        *rgba = Some(frame.image.rgba.clone());
+        *texture = None;
+        ctx.request_repaint();
     }
 
     pub fn request_full_res_if_needed(&mut self) {
@@ -557,6 +754,25 @@ impl LookApp {
         self.open_path(path);
     }
 
+    pub fn toggle_slideshow(&mut self) {
+        self.slideshow_active = !self.slideshow_active;
+        self.slideshow_last_tick = Instant::now();
+        self.touch();
+    }
+
+    pub fn tick_slideshow(&mut self) {
+        if !self.slideshow_active {
+            return;
+        }
+        if self.folder_files.len() < 2 {
+            return;
+        }
+        if self.slideshow_last_tick.elapsed() >= self.slideshow_interval {
+            self.slideshow_last_tick = Instant::now();
+            self.navigate(1);
+        }
+    }
+
     pub fn navigate_to_index(&mut self, index: usize) {
         if index >= self.folder_files.len() {
             return;
@@ -648,6 +864,7 @@ impl LookApp {
     pub fn toggle_video_playback(&mut self) {
         if matches!(self.media, Some(LoadedMedia::Video { .. })) {
             self.video_engine.toggle();
+            self.flash_play_pause();
             self.touch();
         }
     }

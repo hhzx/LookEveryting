@@ -149,6 +149,18 @@ fn en_us() -> Vec<(&'static str, &'static str)> {
         ("video-external-hint", "Embedded playback coming soon — click to open in system player"),
         ("model-hint", "Drag: rotate · Scroll: zoom"),
         ("toast-file-not-supported", "Unsupported file format"),
+        ("slideshow-start", "Start slideshow"),
+        ("slideshow-stop", "Stop slideshow"),
+        ("slideshow-interval", "Interval"),
+        ("shortcuts-title", "Keyboard shortcuts"),
+        ("error-open-system", "Open with system app"),
+        ("error-retry", "Retry"),
+        ("volume", "Volume"),
+        ("mute", "Mute"),
+        ("unmute", "Unmute"),
+        ("model-hud-verts", "Verts: {count}"),
+        ("model-hud-tris", "Tris: {count}"),
+        ("help-hint", "Press ? for shortcuts"),
     ]
 }
 
@@ -209,6 +221,18 @@ fn zh_hans() -> Vec<(&'static str, &'static str)> {
         ("video-external-hint", "内嵌播放即将支持 — 点击用系统播放器打开"),
         ("model-hint", "拖动旋转 · 滚轮缩放"),
         ("toast-file-not-supported", "不支持的文件格式"),
+        ("slideshow-start", "开始幻灯片"),
+        ("slideshow-stop", "停止幻灯片"),
+        ("slideshow-interval", "间隔"),
+        ("shortcuts-title", "快捷键"),
+        ("error-open-system", "用系统应用打开"),
+        ("error-retry", "重试"),
+        ("volume", "音量"),
+        ("mute", "静音"),
+        ("unmute", "取消静音"),
+        ("model-hud-verts", "顶点：{count}"),
+        ("model-hud-tris", "三角面：{count}"),
+        ("help-hint", "按 ? 查看快捷键"),
     ]
 }
 

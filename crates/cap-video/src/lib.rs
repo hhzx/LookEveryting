@@ -31,6 +31,8 @@ pub struct VideoInfo {
     pub duration_secs: f32,
     pub width: u32,
     pub height: u32,
+    /// Best-effort: whether DXVA/D3D11 hardware decode may be available on this OS.
+    pub hw_decode_available: bool,
 }
 
 impl VideoInfo {
@@ -65,12 +67,18 @@ impl VideoInfo {
             duration_secs: 0.0,
             width: 0,
             height: 0,
+            hw_decode_available: hw_decode_likely_available(),
         })
     }
 
     pub fn file_size_label(&self) -> String {
         format_bytes(self.file_size)
     }
+}
+
+/// Conservative probe — Windows MF typically has DXVA paths when drivers exist.
+fn hw_decode_likely_available() -> bool {
+    cfg!(windows)
 }
 
 fn format_bytes(bytes: u64) -> String {
