@@ -33,9 +33,13 @@ pub struct VideoPlayer {
 
 impl VideoPlayer {
     pub fn open(path: PathBuf) -> Result<Self, PlayerError> {
+        Self::open_with_options(path, true)
+    }
+
+    pub fn open_with_options(path: PathBuf, prefer_hw_decode: bool) -> Result<Self, PlayerError> {
         #[cfg(windows)]
         {
-            let inner = mf::MfPlayer::open(&path)?;
+            let inner = mf::MfPlayer::open(&path, prefer_hw_decode)?;
             let fps = inner.fps().max(24.0);
             Ok(Self {
                 path,
@@ -47,7 +51,7 @@ impl VideoPlayer {
         }
         #[cfg(not(windows))]
         {
-            let _ = path;
+            let _ = (path, prefer_hw_decode);
             Err(PlayerError::UnsupportedPlatform)
         }
     }
@@ -293,13 +297,13 @@ mod mf {
             self.seek_to_100ns(target)
         }
 
-        pub fn open(path: &Path) -> Result<Self, PlayerError> {
+        pub fn open(path: &Path, prefer_hw_decode: bool) -> Result<Self, PlayerError> {
             mf_runtime::ensure_initialized();
 
             unsafe {
                 let wide = path_to_file_url(path)?;
                 let mut attrs = None;
-                MFCreateAttributes(&mut attrs, 1)
+                MFCreateAttributes(&mut attrs, 2)
                     .map_err(|e| PlayerError::Message(e.to_string()))?;
                 let attrs = attrs.ok_or_else(|| {
                     PlayerError::Message("MFCreateAttributes returned null".into())
@@ -307,6 +311,11 @@ mod mf {
                 attrs
                     .SetUINT32(&MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, 1)
                     .map_err(|e| PlayerError::Message(e.to_string()))?;
+                if prefer_hw_decode {
+                    attrs
+                        .SetUINT32(&MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, 1)
+                        .map_err(|e| PlayerError::Message(e.to_string()))?;
+                }
 
                 let reader = MFCreateSourceReaderFromURL(PCWSTR(wide.as_ptr()), Some(&attrs))
                     .map_err(|e| PlayerError::Message(format!("open video: {e}")))?;

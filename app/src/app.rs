@@ -42,6 +42,7 @@ pub enum LoadedMedia {
         duration_secs: f32,
         position_secs: f32,
         position_fraction: f32,
+        subtitles: crate::subtitles::Subtitles,
     },
     Model {
         info: ModelInfo,
@@ -326,7 +327,9 @@ impl LookApp {
                 height: 0,
                 hw_decode_available: cfg!(windows),
             });
-            self.video_engine.open(path.clone());
+            self.video_engine
+                .open(path.clone(), self.settings.prefer_hw_decode);
+            let subtitles = crate::subtitles::Subtitles::load_sidecar(&path).unwrap_or_default();
             self.media = Some(LoadedMedia::Video {
                 info,
                 path,
@@ -336,6 +339,7 @@ impl LookApp {
                 duration_secs: 0.0,
                 position_secs: 0.0,
                 position_fraction: 0.0,
+                subtitles,
             });
             self.viewer_mode = ViewerMode::Viewer;
             self.clear_held_frame();

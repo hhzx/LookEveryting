@@ -1,6 +1,7 @@
 mod app;
 mod image_viewport;
 mod loader;
+mod subtitles;
 mod thumbnails;
 mod ui;
 mod video_thread;

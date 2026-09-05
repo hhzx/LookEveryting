@@ -347,8 +347,15 @@ fn viewport(app: &mut LookApp, ui: &mut Ui) {
             duration_secs,
             position_secs,
             position_fraction,
-            ..
+            subtitles,
         }) => {
+            let subtitle = if app.settings.show_subtitles {
+                subtitles
+                    .active_at(*position_secs)
+                    .map(str::to_string)
+            } else {
+                None
+            };
             let args = (
                 info.clone(),
                 path.clone(),
@@ -358,6 +365,7 @@ fn viewport(app: &mut LookApp, ui: &mut Ui) {
                 *duration_secs,
                 *position_secs,
                 *position_fraction,
+                subtitle,
             );
             draw_video_view(app, ui, rect, args);
             draw_play_flash(app, ui, rect);
@@ -430,6 +438,7 @@ fn draw_video_view(
         duration_secs,
         position_secs,
         position_fraction,
+        subtitle,
     ): (
         cap_video::VideoInfo,
         std::path::PathBuf,
@@ -439,10 +448,12 @@ fn draw_video_view(
         f32,
         f32,
         f32,
+        Option<String>,
     ),
 ) {
     ui.painter().rect_filled(rect, 0.0, Color32::BLACK);
 
+    let mut frame_bottom = rect.bottom();
     if let Some(tex) = texture.as_ref() {
         let avail = rect.size();
         let [tw, th] = tex.size();
@@ -450,6 +461,7 @@ fn draw_video_view(
         let scale = (avail.x / img_size.x).min(avail.y / img_size.y);
         let size = img_size * scale;
         let img_rect = egui::Rect::from_center_size(rect.center(), size);
+        frame_bottom = img_rect.bottom();
         ui.painter().image(
             tex.id(),
             img_rect,
@@ -473,6 +485,10 @@ fn draw_video_view(
             egui::FontId::proportional(14.0),
             color,
         );
+    }
+
+    if let Some(text) = subtitle.as_deref() {
+        draw_subtitle_overlay(ui, rect, frame_bottom, text);
     }
 
     let controls_h = 72.0;
@@ -567,6 +583,25 @@ fn draw_video_view(
         egui::FontId::monospace(11.0),
         Semantic::FG_MUTED,
     );
+}
+
+fn draw_subtitle_overlay(ui: &mut Ui, viewport: egui::Rect, frame_bottom: f32, text: &str) {
+    let font = egui::FontId::proportional(18.0);
+    let galley = ui.painter().layout(
+        text.to_string(),
+        font,
+        Color32::WHITE,
+        viewport.width() * 0.86,
+    );
+    let pad = vec2(12.0, 6.0);
+    let size = galley.size() + pad * 2.0;
+    let y = (frame_bottom - 28.0).min(viewport.bottom() - 88.0);
+    let center = egui::pos2(viewport.center().x, y);
+    let box_rect = egui::Rect::from_center_size(center, size);
+    ui.painter()
+        .rect_filled(box_rect, 4.0, Color32::from_rgba_unmultiplied(0, 0, 0, 160));
+    ui.painter()
+        .galley(box_rect.min + pad, galley, Color32::WHITE);
 }
 
 fn format_time(secs: f32) -> String {
@@ -999,6 +1034,19 @@ fn settings_panel(app: &mut LookApp, ui: &mut Ui) {
         &mut app.settings.toolbar_auto_hide,
         app.i18n.t("settings-toolbar-auto-hide"),
     );
+    ui.checkbox(
+        &mut app.settings.show_subtitles,
+        app.i18n.t("settings-show-subtitles"),
+    );
+    ui.checkbox(
+        &mut app.settings.prefer_hw_decode,
+        app.i18n.t("settings-prefer-hw-decode"),
+    );
+    ui.label(
+        RichText::new(app.i18n.t("settings-prefer-hw-decode-hint"))
+            .size(11.0)
+            .color(Semantic::FG_MUTED),
+    );
 
     ui.add_space(12.0);
     ui.separator();
@@ -1088,6 +1136,10 @@ fn handle_shortcuts(app: &mut LookApp, ctx: &egui::Context) {
         }
         if i.key_pressed(egui::Key::End) && !app.folder_files.is_empty() {
             app.navigate_to_index(app.folder_files.len() - 1);
+        }
+        if is_video && i.key_pressed(egui::Key::V) {
+            app.settings.show_subtitles = !app.settings.show_subtitles;
+            let _ = cap_core::save_settings(&app.settings);
         }
         if is_video && i.key_pressed(egui::Key::Space) {
             app.toggle_video_playback();
@@ -1213,12 +1265,13 @@ fn shortcuts_panel(app: &mut LookApp, ui: &mut Ui) {
         ("← → ↑ ↓", "Navigate files (video ←→ = ±5s)"),
         ("Shift+← →", "Frame step (video)"),
         ("Space", "Slideshow / Play-Pause"),
+        ("V", "Toggle subtitles (.srt)"),
+        ("M", "Mute (video)"),
         ("F / 0", "Fit"),
         ("1", "Actual size 100%"),
         ("R", "Reset view / camera"),
         ("F11", "Fullscreen"),
         ("I", "Info panel"),
-        ("M", "Mute (video)"),
         ("? ", "This help"),
         ("Esc", "Close overlays / exit fullscreen"),
     ];

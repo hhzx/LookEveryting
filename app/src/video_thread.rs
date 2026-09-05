@@ -7,7 +7,10 @@ use cap_video::{VideoFrame, VideoInfo, VideoPlayer};
 use crossbeam_channel::{Receiver, Sender, TryRecvError, unbounded};
 
 pub enum VideoCommand {
-    Open(PathBuf),
+    Open {
+        path: PathBuf,
+        prefer_hw_decode: bool,
+    },
     Play,
     Pause,
     Toggle,
@@ -59,8 +62,11 @@ impl VideoThread {
         }
     }
 
-    pub fn open(&self, path: PathBuf) {
-        let _ = self.cmd_tx.send(VideoCommand::Open(path));
+    pub fn open(&self, path: PathBuf, prefer_hw_decode: bool) {
+        let _ = self.cmd_tx.send(VideoCommand::Open {
+            path,
+            prefer_hw_decode,
+        });
     }
 
     pub fn play(&self) {
@@ -125,10 +131,13 @@ fn video_loop(cmd_rx: Receiver<VideoCommand>, evt_tx: Sender<VideoEvent>) {
 
     while let Ok(cmd) = cmd_rx.recv() {
         match cmd {
-            VideoCommand::Open(path) => {
+            VideoCommand::Open {
+                path,
+                prefer_hw_decode,
+            } => {
                 player = None;
                 match VideoInfo::from_path(&path) {
-                    Ok(mut info) => match VideoPlayer::open(path) {
+                    Ok(mut info) => match VideoPlayer::open_with_options(path, prefer_hw_decode) {
                         Ok(p) => {
                             let duration_secs = p.duration_secs();
                             let width = p.width();

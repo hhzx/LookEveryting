@@ -72,6 +72,15 @@ pub struct AppSettings {
     pub last_directory: Option<PathBuf>,
     #[serde(default)]
     pub file_associations: FileAssociations,
+    /// Prefer hardware-accelerated video decode when the platform supports it.
+    #[serde(default = "default_true")]
+    pub prefer_hw_decode: bool,
+    #[serde(default = "default_true")]
+    pub show_subtitles: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Which media kinds are registered as default open handlers.
@@ -101,6 +110,8 @@ impl Default for AppSettings {
             toolbar_auto_hide: true,
             last_directory: None,
             file_associations: FileAssociations::default(),
+            prefer_hw_decode: true,
+            show_subtitles: true,
         }
     }
 }
