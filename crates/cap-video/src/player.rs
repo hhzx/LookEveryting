@@ -270,6 +270,8 @@ mod mf {
         frame_duration_100ns: i64,
         position_100ns: i64,
         duration_100ns: i64,
+        /// Keeps DXGI device manager alive for DXVA decode.
+        _dxva: Option<crate::dxva::DxvaContext>,
     }
 
     impl MfPlayer {
@@ -314,17 +316,35 @@ mod mf {
             unsafe {
                 let wide = path_to_file_url(path)?;
                 let mut attrs = None;
-                MFCreateAttributes(&mut attrs, 2)
+                MFCreateAttributes(&mut attrs, 4)
                     .map_err(|e| PlayerError::Message(e.to_string()))?;
                 let attrs = attrs.ok_or_else(|| {
                     PlayerError::Message("MFCreateAttributes returned null".into())
                 })?;
-                attrs
-                    .SetUINT32(&MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, 1)
-                    .map_err(|e| PlayerError::Message(e.to_string()))?;
+
+                let mut dxva = None;
                 if prefer_hw_decode {
                     attrs
                         .SetUINT32(&MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, 1)
+                        .map_err(|e| PlayerError::Message(e.to_string()))?;
+                    if let Ok(ctx) = crate::dxva::DxvaContext::try_create() {
+                        attrs
+                            .SetUnknown(&MF_SOURCE_READER_D3D_MANAGER, &ctx.manager)
+                            .map_err(|e| PlayerError::Message(e.to_string()))?;
+                        // Prefer advanced processing when a D3D manager is attached.
+                        attrs
+                            .SetUINT32(&MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, 1)
+                            .ok();
+                        dxva = Some(ctx);
+                    } else {
+                        // Fall back to software video processing path.
+                        attrs
+                            .SetUINT32(&MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, 1)
+                            .ok();
+                    }
+                } else {
+                    attrs
+                        .SetUINT32(&MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, 1)
                         .map_err(|e| PlayerError::Message(e.to_string()))?;
                 }
 
@@ -357,6 +377,7 @@ mod mf {
                     frame_duration_100ns,
                     position_100ns: 0,
                     duration_100ns,
+                    _dxva: dxva,
                 };
                 player.read_frame_into_current()?;
                 Ok(player)

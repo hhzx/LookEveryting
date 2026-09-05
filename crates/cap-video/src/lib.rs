@@ -1,6 +1,8 @@
 //! Video file metadata and in-app playback.
 
 mod audio;
+#[cfg(windows)]
+mod dxva;
 mod mf_runtime;
 mod player;
 mod thumb;

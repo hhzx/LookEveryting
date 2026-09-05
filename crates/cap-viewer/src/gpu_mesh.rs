@@ -13,6 +13,7 @@ use glam::{Mat4, Vec3};
 struct GpuVertex {
     position: [f32; 3],
     normal: [f32; 3],
+    uv: [f32; 2],
 }
 
 #[repr(C)]
@@ -21,6 +22,8 @@ struct Uniforms {
     mvp: [[f32; 4]; 4],
     light_dir: [f32; 4],
     base_color: [f32; 4],
+    /// x=metallic, y=roughness, z=has_albedo (1/0), w=pad
+    params: [f32; 4],
 }
 
 /// Persistent GPU resources stored in egui_wgpu callback_resources.
@@ -43,7 +46,11 @@ struct UploadedMesh {
     index_count: u32,
     uniform_buf: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
+    _albedo_tex: wgpu::Texture,
     base_color: [f32; 4],
+    metallic: f32,
+    roughness: f32,
+    has_albedo: bool,
 }
 
 struct OffscreenTargets {
@@ -67,16 +74,34 @@ impl MeshRenderResources {
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("mesh3d_uniforms"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: NonZeroU64::new(std::mem::size_of::<Uniforms>() as u64),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: NonZeroU64::new(std::mem::size_of::<Uniforms>() as u64),
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
         });
 
         let blit_bind_group_layout =
@@ -122,7 +147,7 @@ impl MeshRenderResources {
                 buffers: &[wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<GpuVertex>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3],
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2],
                 }],
                 compilation_options: Default::default(),
             },
@@ -195,7 +220,7 @@ impl MeshRenderResources {
         }
     }
 
-    pub fn upload_mesh(&mut self, device: &wgpu::Device, mesh: &MeshData) {
+    pub fn upload_mesh(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, mesh: &MeshData) {
         let (vertices, indices) = build_gpu_mesh(mesh);
         if vertices.is_empty() || indices.is_empty() {
             self.mesh = None;
@@ -218,13 +243,68 @@ impl MeshRenderResources {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+
+        let has_albedo = mesh.albedo.as_ref().is_some_and(|a| !a.rgba.is_empty());
+        let albedo_tex = if let Some(map) = mesh.albedo.as_ref().filter(|a| !a.rgba.is_empty()) {
+            device.create_texture_with_data(
+                queue,
+                &wgpu::TextureDescriptor {
+                    label: Some("mesh_albedo"),
+                    size: wgpu::Extent3d {
+                        width: map.width.max(1),
+                        height: map.height.max(1),
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                },
+                wgpu::util::TextureDataOrder::LayerMajor,
+                &map.rgba,
+            )
+        } else {
+            device.create_texture_with_data(
+                queue,
+                &wgpu::TextureDescriptor {
+                    label: Some("mesh_white"),
+                    size: wgpu::Extent3d {
+                        width: 1,
+                        height: 1,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                },
+                wgpu::util::TextureDataOrder::LayerMajor,
+                &[255, 255, 255, 255],
+            )
+        };
+        let albedo_view = albedo_tex.create_view(&Default::default());
+
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("mesh_uniforms"),
             layout: &self.bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniform_buf.as_entire_binding(),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&albedo_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
         });
 
         self.mesh = Some(UploadedMesh {
@@ -233,7 +313,11 @@ impl MeshRenderResources {
             index_count: indices.len() as u32,
             uniform_buf,
             bind_group,
+            _albedo_tex: albedo_tex,
             base_color: mesh.base_color,
+            metallic: mesh.metallic,
+            roughness: mesh.roughness,
+            has_albedo,
         });
     }
 
@@ -349,6 +433,7 @@ fn build_gpu_mesh(mesh: &MeshData) -> (Vec<GpuVertex>, Vec<u32>) {
         .map(|(i, p)| GpuVertex {
             position: *p,
             normal: normals[i].normalize_or_zero().to_array(),
+            uv: mesh.uvs.get(i).copied().unwrap_or([0.0, 0.0]),
         })
         .collect();
     (vertices, indices)
@@ -380,7 +465,7 @@ impl CallbackTrait for MeshPaintCallback {
             res.clear_mesh();
         }
         if let Some(mesh) = self.mesh_to_upload.as_ref() {
-            res.upload_mesh(device, mesh);
+            res.upload_mesh(device, queue, mesh);
         }
 
         res.pending_mvp = self.mvp.to_cols_array_2d();
@@ -398,6 +483,12 @@ impl CallbackTrait for MeshPaintCallback {
             mvp: res.pending_mvp,
             light_dir: [0.35, 0.75, 0.45, 0.0],
             base_color: mesh.base_color,
+            params: [
+                mesh.metallic,
+                mesh.roughness,
+                if mesh.has_albedo { 1.0 } else { 0.0 },
+                0.0,
+            ],
         };
         queue.write_buffer(&mesh.uniform_buf, 0, bytemuck::bytes_of(&uniforms));
 
@@ -472,16 +563,21 @@ struct Uniforms {
     mvp: mat4x4<f32>,
     light_dir: vec4<f32>,
     base_color: vec4<f32>,
+    params: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> u: Uniforms;
+@group(0) @binding(1) var albedo_tex: texture_2d<f32>;
+@group(0) @binding(2) var albedo_samp: sampler;
 
 struct VsIn {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
+    @location(2) uv: vec2<f32>,
 };
 struct VsOut {
     @builtin(position) clip_pos: vec4<f32>,
     @location(0) normal: vec3<f32>,
+    @location(1) uv: vec2<f32>,
 };
 
 @vertex
@@ -489,6 +585,7 @@ fn vs_main(v: VsIn) -> VsOut {
     var o: VsOut;
     o.clip_pos = u.mvp * vec4<f32>(v.position, 1.0);
     o.normal = normalize(v.normal);
+    o.uv = v.uv;
     return o;
 }
 
@@ -496,11 +593,20 @@ fn vs_main(v: VsIn) -> VsOut {
 fn fs_main(i: VsOut) -> @location(0) vec4<f32> {
     let n = normalize(i.normal);
     let l = normalize(u.light_dir.xyz);
-    let ambient = 0.22;
-    let diff = max(dot(n, l), 0.0) * 0.7;
-    let fill = max(dot(n, normalize(vec3<f32>(-0.5, 0.3, -0.6))), 0.0) * 0.25;
-    let intensity = clamp(ambient + diff + fill, 0.12, 1.0);
-    return vec4<f32>(u.base_color.rgb * intensity, 1.0);
+    let ambient = 0.18;
+    let diff = max(dot(n, l), 0.0) * 0.65;
+    let fill = max(dot(n, normalize(vec3<f32>(-0.5, 0.3, -0.6))), 0.0) * 0.2;
+    var albedo = u.base_color.rgb;
+    if (u.params.z > 0.5) {
+        albedo = albedo * textureSample(albedo_tex, albedo_samp, i.uv).rgb;
+    }
+    let metallic = clamp(u.params.x, 0.0, 1.0);
+    let roughness = clamp(u.params.y, 0.04, 1.0);
+    let h = normalize(l + vec3<f32>(0.0, 0.0, 1.0));
+    let spec = pow(max(dot(n, h), 0.0), mix(8.0, 64.0, 1.0 - roughness)) * mix(0.04, 0.45, metallic);
+    let intensity = clamp(ambient + diff + fill, 0.08, 1.0);
+    let color = albedo * intensity + vec3<f32>(spec);
+    return vec4<f32>(color, u.base_color.a);
 }
 "#;
 

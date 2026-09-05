@@ -29,13 +29,14 @@
 | gltf / glb | glTF（含 base color / albedo 因子） |
 | fbx | ufbx |
 
-轨道相机、线框/实体、渐变背景、HUD。实体着色走 **wgpu PaintCallback**；filmstrip 有 CPU 软光栅缩略图。
+轨道相机、线框/实体、渐变背景、HUD。实体着色走 **wgpu PaintCallback**（albedo 贴图 + metallic/roughness）；filmstrip 有 CPU 软光栅缩略图。
 
 ## 打包
 
 - 便携：`scripts/build.ps1` → `dist/LookEveryting-portable.zip`
 - 安装：`scripts/install.ps1`（每用户 LocalAppData + 开始菜单）
-- 更新检查：`scripts/check-update.ps1`
+- MSI：`scripts/build-msi.ps1`（需安装 [WiX Toolset](https://wixtoolset.org/)）
+- 更新：`scripts/check-update.ps1 [-Download]`
 
 ## 快捷键摘要
 

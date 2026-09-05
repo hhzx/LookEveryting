@@ -52,6 +52,8 @@ pub struct MeshData {
     pub uvs: Vec<[f32; 2]>,
     /// PBR base color factor (linear RGB + alpha).
     pub base_color: [f32; 4],
+    pub metallic: f32,
+    pub roughness: f32,
     /// Optional albedo texture (RGBA8).
     pub albedo: Option<AlbedoMap>,
 }
@@ -72,6 +74,8 @@ impl Default for MeshData {
             bounds: Bounds::default(),
             uvs: Vec::new(),
             base_color: [0.35, 0.72, 0.95, 1.0],
+            metallic: 0.0,
+            roughness: 0.5,
             albedo: None,
         }
     }
@@ -203,6 +207,8 @@ fn load_gltf(path: &Path) -> Result<MeshData, ModelError> {
     let mut uvs = Vec::new();
     let mut base = 0u32;
     let mut base_color = [0.35_f32, 0.72, 0.95, 1.0];
+    let mut metallic = 0.0_f32;
+    let mut roughness = 0.5_f32;
     let mut albedo = None;
 
     for mesh in document.meshes() {
@@ -226,6 +232,8 @@ fn load_gltf(path: &Path) -> Result<MeshData, ModelError> {
                 let mat = primitive.material();
                 let pbr = mat.pbr_metallic_roughness();
                 base_color = pbr.base_color_factor();
+                metallic = pbr.metallic_factor();
+                roughness = pbr.roughness_factor();
                 if let Some(info) = pbr.base_color_texture() {
                     let tex_idx = info.texture().source().index();
                     if let Some(img) = images.get(tex_idx) {
@@ -281,6 +289,8 @@ fn load_gltf(path: &Path) -> Result<MeshData, ModelError> {
         bounds: Bounds::default(),
         uvs,
         base_color,
+        metallic,
+        roughness,
         albedo,
     })
 }

@@ -14,10 +14,10 @@
 - [x] 主题 Dark / Light / System
 - [x] 批量重命名（F2）、便携 zip 打包脚本
 
-## v0.6 — 画质与性能（进行中）
+## v0.6 — 画质与性能
 
 - [x] wgpu mesh PaintCallback（实体着色 + 深度；线框仍走 CPU）
-- [x] MF 硬件变换偏好开关（`prefer_hw_decode`；完整 DXVA/D3D11 设备管理仍待）
+- [x] MF DXVA/D3D11 硬解（`prefer_hw_decode` + DXGI device manager）
 - [x] 音频轨 WASAPI/cpal 播放（与视频时钟软同步；音量/静音生效）
 - [x] 邻居预取 ±2
 - [x] 侧车 SRT 字幕叠加（设置 / `V` 开关）
@@ -28,7 +28,7 @@
 - [x] 视频/3D 缩略图真实首帧
 - [x] A-B 循环
 - [x] ASS/SSA 侧车字幕 + 多音轨切换（`T`）
-- [x] glTF base color / albedo 材质因子（PBR-lite）
+- [x] glTF PBR-lite（base color + albedo 贴图 + metallic/roughness）
 - [x] 轻量批量重命名
 - [x] RAW 预览（crude demosaic）
 - [x] 图片旋转 / 翻转（Ctrl+R / H / Shift+H）
@@ -36,11 +36,10 @@
 ## v1.0 — 产品化
 
 - [x] 便携 zip（`scripts/build.ps1`）
-- [x] 每用户安装脚本（`scripts/install.ps1`，非 MSI）
+- [x] 每用户安装脚本（`scripts/install.ps1`）
+- [x] WiX MSI 脚本（`scripts/build-msi.ps1` + `packaging/LookEveryting.wxs`，需本机 WiX）
 - [x] 主题跟随系统
 - [x] 格式支持表 `docs/FORMATS.md`
-- [x] 更新检查脚本（`scripts/check-update.ps1`，可选）
-- [ ] 完整 MSI / 自动下载安装（可选）
-- [ ] 完整 DXVA/D3D11 设备管理（硬解偏好已落地）
-- [ ] 完整 PBR（metallic-roughness / normal / IBL）
-- [ ] 内嵌字幕轨（MF）
+- [x] 更新检查/下载（`scripts/check-update.ps1 -Download`）
+- [ ] MF 内嵌字幕轨（可选）
+- [ ] 完整 IBL / normal map（可选进阶）
