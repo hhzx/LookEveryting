@@ -483,6 +483,11 @@ fn scale_decoded(src: &DecodedImage, max_edge: u32) -> DecodedImage {
     }
 }
 
+/// Downscale a decoded image for filmstrip use.
+pub fn to_thumbnail(src: &DecodedImage, max_edge: u32) -> DecodedImage {
+    scale_decoded(src, max_edge)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

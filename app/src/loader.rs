@@ -68,7 +68,8 @@ pub enum LoadMessage {
     },
     Thumbnail {
         path: PathBuf,
-        decoded: DecodedImage,
+        /// `None` means decode failed — UI should stop retrying.
+        decoded: Option<DecodedImage>,
     },
 }
 
@@ -82,13 +83,13 @@ enum ThumbJob {
     Decode(PathBuf),
 }
 
-/// Bounded worker pool for media loads; thumbs on a dedicated thread.
+/// Bounded worker pool for media loads; thumbs on dedicated threads.
 pub struct MediaLoader {
     media_tx: Sender<MediaJob>,
     msg_rx: Receiver<LoadMessage>,
     thumb_tx: Sender<ThumbJob>,
     _media_workers: Vec<JoinHandle<()>>,
-    _thumb_worker: JoinHandle<()>,
+    _thumb_workers: Vec<JoinHandle<()>>,
 }
 
 impl MediaLoader {
@@ -109,18 +110,25 @@ impl MediaLoader {
             );
         }
 
-        let thumb_msg_tx = msg_tx.clone();
-        let thumb_worker = thread::Builder::new()
-            .name("lookeveryting-thumbs".into())
-            .spawn(move || thumb_loop(thumb_rx, thumb_msg_tx))
-            .expect("spawn thumb thread");
+        const THUMB_WORKERS: usize = 3;
+        let mut thumb_workers = Vec::with_capacity(THUMB_WORKERS);
+        for i in 0..THUMB_WORKERS {
+            let rx = thumb_rx.clone();
+            let tx = msg_tx.clone();
+            thumb_workers.push(
+                thread::Builder::new()
+                    .name(format!("lookeveryting-thumbs-{i}"))
+                    .spawn(move || thumb_loop(rx, tx))
+                    .expect("spawn thumb thread"),
+            );
+        }
 
         Self {
             media_tx,
             msg_rx,
             thumb_tx,
             _media_workers: media_workers,
-            _thumb_worker: thumb_worker,
+            _thumb_workers: thumb_workers,
         }
     }
 
@@ -247,40 +255,31 @@ fn load_prefetch_job(path: PathBuf, tx: &Sender<LoadMessage>) {
 
 fn thumb_loop(jobs: Receiver<ThumbJob>, out: Sender<LoadMessage>) {
     while let Ok(ThumbJob::Decode(path)) = jobs.recv() {
-        match classify_extension(&path) {
+        let decoded = match classify_extension(&path) {
             Some(MediaKind::Image) => {
-                if let Ok(decoded) = cap_image::decode_thumbnail(&path, 240) {
-                    let _ = out.send(LoadMessage::Thumbnail { path, decoded });
-                }
+                cap_image::decode_thumbnail(&path, 192).ok()
             }
-            Some(MediaKind::Video) => {
-                if let Some(frame) = cap_video::decode_thumbnail(&path, 240) {
-                    let decoded = DecodedImage {
-                        width: frame.width,
-                        height: frame.height,
-                        rgba: frame.rgba,
-                        native_width: frame.width,
-                        native_height: frame.height,
-                    };
-                    let _ = out.send(LoadMessage::Thumbnail { path, decoded });
+            Some(MediaKind::Video) => cap_video::decode_thumbnail(&path, 192).map(|frame| {
+                DecodedImage {
+                    width: frame.width,
+                    height: frame.height,
+                    rgba: frame.rgba,
+                    native_width: frame.width,
+                    native_height: frame.height,
                 }
-            }
-            Some(MediaKind::Model) => {
-                if let Ok(mesh) = load_mesh(&path) {
-                    if let Some(rgba) = cap_viewer::render_mesh_thumbnail(&mesh, 240) {
-                        let decoded = DecodedImage {
-                            width: 240,
-                            height: 240,
-                            rgba,
-                            native_width: 240,
-                            native_height: 240,
-                        };
-                        let _ = out.send(LoadMessage::Thumbnail { path, decoded });
-                    }
-                }
-            }
-            _ => {}
-        }
+            }),
+            Some(MediaKind::Model) => load_mesh(&path).ok().and_then(|mesh| {
+                cap_viewer::render_mesh_thumbnail(&mesh, 192).map(|rgba| DecodedImage {
+                    width: 192,
+                    height: 192,
+                    rgba,
+                    native_width: 192,
+                    native_height: 192,
+                })
+            }),
+            _ => None,
+        };
+        let _ = out.send(LoadMessage::Thumbnail { path, decoded });
     }
 }
 

@@ -547,10 +547,23 @@ impl LookApp {
                     }
                 }
                 LoadMessage::Thumbnail { path, decoded } => {
-                    self.thumbnails.pending.insert(
-                        path.to_string_lossy().to_string(),
-                        decoded,
-                    );
+                    let key = crate::thumbnails::thumb_key(&path);
+                    self.thumbnails.in_flight.remove(&key);
+                    // Prefer an already-seeded/uploaded thumb over a late worker result.
+                    if self.thumbnails.textures.contains_key(&key)
+                        || self.thumbnails.pending.contains_key(&key)
+                    {
+                        continue;
+                    }
+                    match decoded {
+                        Some(decoded) => {
+                            self.thumbnails.failed.remove(&key);
+                            self.thumbnails.pending.insert(key, decoded);
+                        }
+                        None => {
+                            self.thumbnails.failed.insert(key);
+                        }
+                    }
                 }
             }
         }
@@ -674,6 +687,7 @@ impl LookApp {
     }
 
     fn cache_image(&mut self, path: PathBuf, decoded: DecodedImage) {
+        crate::thumbnails::seed_from_decoded(&mut self.thumbnails, &path, &decoded);
         for evicted in self.image_cache.insert(path.clone(), decoded) {
             let key = evicted.to_string_lossy().to_string();
             self.texture_cache.remove(&key);
@@ -686,6 +700,9 @@ impl LookApp {
         upgrade: bool,
         animation: Vec<cap_image::AnimFrame>,
     ) {
+        if let Some(path) = self.current_path.clone() {
+            crate::thumbnails::seed_from_decoded(&mut self.thumbnails, &path, &decoded);
+        }
         let anim = if animation.len() > 1 {
             Some(GifPlayback {
                 frames: animation,

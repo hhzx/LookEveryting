@@ -2,7 +2,7 @@
 
 use std::time::Instant;
 
-use cap_core::{all_supported_filter, ThemePreference};
+use cap_core::{all_supported_filter, classify_extension, MediaKind, ThemePreference};
 use cap_i18n::Locale;
 use cap_ui::colors::{Palette, Semantic};
 use cap_ui::layout::LayoutMode;
@@ -77,11 +77,20 @@ pub fn draw(app: &mut LookApp, ctx: &egui::Context) {
             .exact_height(component::THUMBNAIL_STRIP_HEIGHT)
             .frame(panel_frame(Palette::SURFACE))
             .show(ctx, |ui| {
-                ui.label(
-                    RichText::new(app.i18n.t("browse-thumbnails"))
-                        .size(11.0)
-                        .color(Semantic::FG_MUTED),
-                );
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(app.i18n.t("browse-thumbnails"))
+                            .size(11.0)
+                            .color(Semantic::FG_MUTED),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            RichText::new(format!("{}", app.folder_files.len()))
+                                .size(11.0)
+                                .color(Semantic::FG_MUTED),
+                        );
+                    });
+                });
                 let strip_h = component::THUMBNAIL_STRIP_SIZE + 4.0;
                 ui.set_height(strip_h);
                 // Vertical mouse wheel → horizontal scroll while hovering the strip.
@@ -217,40 +226,118 @@ fn title_bar(app: &mut LookApp, ui: &mut Ui) {
 
 fn sidebar(app: &mut LookApp, ui: &mut Ui, layout: LayoutMode) {
     ui.spacing_mut().item_spacing.y = space::S1;
-    if ghost_button(ui, app.i18n.t("common-open")).clicked() {
-        open_file_dialog(app);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = space::S1;
+        if ghost_button(ui, app.i18n.t("common-open")).clicked() {
+            open_file_dialog(app);
+        }
+        if ghost_button(ui, app.i18n.t("toolbar-info")).clicked() {
+            app.info_open = !app.info_open;
+            app.touch();
+        }
+    });
+
+    if layout != LayoutMode::Spacious {
+        return;
     }
-    if ghost_button(ui, app.i18n.t("toolbar-info")).clicked() {
-        app.info_open = !app.info_open;
-        app.touch();
-    }
+
     ui.add_space(space::S2);
-    ui.separator();
-    ui.add_space(space::S2);
-    if layout == LayoutMode::Spacious {
-        ui.label(
-            RichText::new(app.i18n.t("browse-grid"))
-                .color(Semantic::FG_MUTED)
-                .size(11.0),
-        );
-        egui::ScrollArea::vertical().show(ui, |ui| {
+    let count = app.folder_files.len();
+    ui.label(
+        RichText::new(format!("{} · {count}", app.i18n.t("browse-thumbnails")))
+            .color(Semantic::FG_MUTED)
+            .size(11.0),
+    );
+    ui.add_space(space::S1);
+
+    let row_h = 30.0_f32;
+    let mut open_index = None;
+    let current = app.current_index;
+    egui::ScrollArea::vertical()
+        .auto_shrink([false; 2])
+        .id_salt("sidebar_files")
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
             let files = app.folder_files.clone();
             for (idx, path) in files.iter().enumerate() {
+                let selected = idx == current;
                 let name = path
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("?");
-                let selected = idx == app.current_index;
-                let text = if selected {
-                    RichText::new(name).color(Palette::ACCENT)
-                } else {
-                    RichText::new(name).color(Semantic::FG_SECONDARY)
-                };
-                if ui.selectable_label(selected, text).clicked() && !selected {
-                    app.navigate_to_index(idx);
+                let key = crate::thumbnails::thumb_key(path);
+                let full_width = ui.available_width();
+                let (rect, response) =
+                    ui.allocate_exact_size(vec2(full_width, row_h), Sense::click());
+
+                if selected {
+                    ui.painter().rect_filled(rect, 4.0, Palette::ACCENT_MUTED);
+                } else if response.hovered() {
+                    ui.painter()
+                        .rect_filled(rect, 4.0, Palette::SURFACE_RAISED);
                 }
+
+                let thumb_side = 22.0;
+                let thumb_rect = egui::Rect::from_center_size(
+                    pos2(rect.left() + 6.0 + thumb_side * 0.5, rect.center().y),
+                    vec2(thumb_side, thumb_side),
+                );
+                if let Some(tex) = app.thumbnails.textures.get(&key) {
+                    ui.painter().rect_filled(thumb_rect, 3.0, Palette::SURFACE_RAISED);
+                    crate::thumbnails::paint_cover_image(
+                        ui,
+                        thumb_rect.shrink(1.0),
+                        tex.id(),
+                        tex.size(),
+                    );
+                } else {
+                    let badge = match classify_extension(path) {
+                        Some(MediaKind::Video) => ("V", Palette::ACCENT),
+                        Some(MediaKind::Model) => ("3D", Color32::from_rgb(0x22, 0xC5, 0x5E)),
+                        _ => ("I", Semantic::FG_MUTED),
+                    };
+                    ui.painter().rect_filled(thumb_rect, 3.0, Palette::SURFACE_RAISED);
+                    ui.painter().text(
+                        thumb_rect.center(),
+                        Align2::CENTER_CENTER,
+                        badge.0,
+                        egui::FontId::proportional(9.0),
+                        badge.1,
+                    );
+                }
+
+                let text_left = thumb_rect.right() + 8.0;
+                let text_rect = egui::Rect::from_min_max(
+                    pos2(text_left, rect.top()),
+                    pos2(rect.right() - 4.0, rect.bottom()),
+                );
+                let color = if selected {
+                    Palette::ACCENT
+                } else {
+                    Semantic::FG_SECONDARY
+                };
+                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(text_rect), |ui| {
+                    ui.with_layout(
+                        egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(false),
+                        |ui| {
+                            ui.set_min_height(row_h);
+                            ui.add(
+                                egui::Label::new(RichText::new(name).color(color).size(12.0))
+                                    .truncate(),
+                            );
+                        },
+                    );
+                });
+
+                if response.clicked() && !selected {
+                    open_index = Some(idx);
+                }
+                response.on_hover_text(name);
             }
         });
+
+    if let Some(idx) = open_index {
+        app.navigate_to_index(idx);
     }
 }
 
