@@ -21,14 +21,17 @@ pub fn draw(app: &mut LookApp, ctx: &egui::Context) {
 
     let screen = ctx.screen_rect();
     let layout = app.layout_mode(screen.width());
-    let show_strip = !app.folder_files.is_empty();
+    let show_strip = !app.folder_files.is_empty() && !app.is_fullscreen();
+    let fullscreen = app.is_fullscreen();
 
-    egui::TopBottomPanel::top("titlebar")
-        .exact_height(component::TITLEBAR_HEIGHT)
-        .frame(titlebar_frame(Palette::SURFACE))
-        .show(ctx, |ui| title_bar(app, ui));
+    if !fullscreen {
+        egui::TopBottomPanel::top("titlebar")
+            .exact_height(component::TITLEBAR_HEIGHT)
+            .frame(titlebar_frame(Palette::SURFACE))
+            .show(ctx, |ui| title_bar(app, ui));
+    }
 
-    if layout != LayoutMode::Compact {
+    if layout != LayoutMode::Compact && !fullscreen {
         egui::SidePanel::left("sidebar")
             .resizable(false)
             .exact_width(if layout == LayoutMode::Spacious {
@@ -40,7 +43,7 @@ pub fn draw(app: &mut LookApp, ctx: &egui::Context) {
             .show(ctx, |ui| sidebar(app, ui, layout));
     }
 
-    if app.info_open && layout == LayoutMode::Spacious {
+    if app.info_open && layout == LayoutMode::Spacious && !fullscreen {
         egui::SidePanel::right("info")
             .resizable(false)
             .exact_width(component::INFO_PANEL_WIDTH)
@@ -52,7 +55,8 @@ pub fn draw(app: &mut LookApp, ctx: &egui::Context) {
         .frame(Frame::NONE.fill(Semantic::BG_VIEWPORT))
         .show(ctx, |ui| {
             viewport(app, ui);
-            if app.toolbar_visible {
+            draw_status_bar(app, ui);
+            if app.toolbar_visible && !fullscreen {
                 draw_floating_toolbar_overlay(app, ui);
             }
         });
@@ -69,10 +73,25 @@ pub fn draw(app: &mut LookApp, ctx: &egui::Context) {
                 );
                 let strip_h = component::THUMBNAIL_STRIP_SIZE + 4.0;
                 ui.set_height(strip_h);
+                // Vertical mouse wheel → horizontal scroll while hovering the strip.
+                let strip_id = ui.id().with("thumb_scroll_area");
+                let strip_rect = ui.available_rect_before_wrap();
+                if ui.rect_contains_pointer(strip_rect) {
+                    ui.ctx().input_mut(|i| {
+                        let dy = i.smooth_scroll_delta.y + i.raw_scroll_delta.y;
+                        if dy.abs() > f32::EPSILON {
+                            i.smooth_scroll_delta.x -= dy;
+                            i.smooth_scroll_delta.y = 0.0;
+                            i.raw_scroll_delta.x -= i.raw_scroll_delta.y;
+                            i.raw_scroll_delta.y = 0.0;
+                        }
+                    });
+                }
                 egui::ScrollArea::horizontal()
-                    .id_salt("thumb_scroll")
+                    .id_salt(strip_id)
                     .auto_shrink([false; 2])
                     .max_height(strip_h)
+                    .drag_to_scroll(true)
                     .show(ui, |ui| {
                         ui.set_height(strip_h);
                         draw_thumbnail_strip(app, ui);
@@ -190,61 +209,107 @@ fn viewport(app: &mut LookApp, ui: &mut Ui) {
     ui.painter()
         .rect_filled(rect, 0.0, Semantic::BG_VIEWPORT);
 
-    if let Some(LoadedMedia::Image { texture, decoded }) = app.media.as_ref() {
-        if let Some(tex) = texture.as_ref() {
-            paint_checkerboard(ui.painter(), rect);
-            let img_size = vec2(decoded.width as f32, decoded.height as f32);
-            let tex_id = tex.id();
-            let _ = interact_image_viewport(app, ui, rect, img_size);
-            let scale = app.display_scale(rect.size(), img_size);
-            let size = img_size * scale;
-            let center = rect.center() + app.pan;
-            let img_rect = egui::Rect::from_center_size(center, size);
-            ui.painter().image(
-                tex_id,
-                img_rect,
-                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                Color32::WHITE,
-            );
+    let image_draw = match &app.media {
+        Some(LoadedMedia::Image {
+            texture: Some(tex),
+            width,
+            height,
+            native_width,
+            native_height,
+            full_res_loading,
+            ..
+        }) => Some((
+            *width,
+            *height,
+            *native_width,
+            *native_height,
+            *full_res_loading,
+            tex.id(),
+        )),
+        _ => None,
+    };
 
-            let pct = (scale * 100.0).round();
+    if let Some((width, height, native_width, native_height, loading_full, tex_id)) = image_draw {
+        paint_checkerboard(ui.painter(), rect);
+        let img_size = vec2(width as f32, height as f32);
+        let capped = width != native_width || height != native_height;
+        let _ = interact_image_viewport(app, ui, rect, img_size);
+        let scale = app.display_scale(rect.size(), img_size);
+        let size = img_size * scale;
+        let center = rect.center() + app.pan;
+        let img_rect = egui::Rect::from_center_size(center, size);
+        ui.painter().image(
+            tex_id,
+            img_rect,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            Color32::WHITE,
+        );
+
+        let pct = (scale * 100.0).round();
+        ui.painter().text(
+            rect.left_top() + vec2(12.0, 8.0),
+            Align2::LEFT_TOP,
+            format!("{pct:.0}%"),
+            egui::FontId::monospace(11.0),
+            Semantic::FG_MUTED,
+        );
+        if loading_full {
             ui.painter().text(
-                rect.left_top() + vec2(12.0, 8.0),
+                rect.left_top() + vec2(12.0, 26.0),
                 Align2::LEFT_TOP,
-                format!("{pct:.0}%"),
-                egui::FontId::monospace(11.0),
-                Semantic::FG_MUTED,
+                app.i18n.t("media-loading-full"),
+                egui::FontId::proportional(11.0),
+                Palette::ACCENT,
             );
+        } else if capped {
             ui.painter().text(
-                rect.left_bottom() + vec2(12.0, -12.0),
-                Align2::LEFT_BOTTOM,
-                "滚轮缩放 · 中键/放大后左键拖拽 · 双击适应 · 0/1/F/R",
+                rect.left_top() + vec2(12.0, 26.0),
+                Align2::LEFT_TOP,
+                app.i18n.t("image-scaled-hint"),
                 egui::FontId::proportional(11.0),
                 Semantic::FG_MUTED,
             );
-            return;
         }
+        ui.painter().text(
+            rect.left_bottom() + vec2(12.0, -12.0),
+            Align2::LEFT_BOTTOM,
+            "滚轮缩放 · 中键/放大后左键拖拽 · 双击适应 · 0/1/F/R · F11 全屏",
+            egui::FontId::proportional(11.0),
+            Semantic::FG_MUTED,
+        );
+        return;
     }
 
     match &mut app.media {
         None => empty_state(app, ui, rect),
-        Some(LoadedMedia::Image { .. }) => {}
-        Some(LoadedMedia::Video { info, path, texture, playing, player, .. }) => {
-            let info = info.clone();
-            let path = path.clone();
-            let texture = texture.clone();
-            let playing = *playing;
-            let player_ready = player.is_some();
-            draw_video_view(
-                app,
-                ui,
-                rect,
-                &info,
-                &path,
-                texture.as_ref(),
-                playing,
-                player_ready,
+        Some(LoadedMedia::Loading { .. }) => {
+            draw_loading_state(app, ui, rect);
+        }
+        Some(LoadedMedia::Image { .. }) => {
+            draw_loading_state(app, ui, rect);
+        }
+        Some(LoadedMedia::Video {
+            info,
+            path,
+            texture,
+            playing,
+            ready,
+            duration_secs,
+            position_secs,
+            position_fraction,
+            ..
+        }) => {
+            let args = (
+                info.clone(),
+                path.clone(),
+                texture.clone(),
+                *playing,
+                *ready,
+                *duration_secs,
+                *position_secs,
+                *position_fraction,
             );
+            draw_video_view(app, ui, rect, args);
         }
         Some(LoadedMedia::Model {
             info,
@@ -282,15 +347,29 @@ fn draw_video_view(
     app: &mut LookApp,
     ui: &mut Ui,
     rect: egui::Rect,
-    info: &cap_video::VideoInfo,
-    path: &std::path::Path,
-    texture: Option<&egui::TextureHandle>,
-    playing: bool,
-    player_ready: bool,
+    (
+        info,
+        path,
+        texture,
+        playing,
+        player_ready,
+        duration_secs,
+        position_secs,
+        position_fraction,
+    ): (
+        cap_video::VideoInfo,
+        std::path::PathBuf,
+        Option<egui::TextureHandle>,
+        bool,
+        bool,
+        f32,
+        f32,
+        f32,
+    ),
 ) {
     ui.painter().rect_filled(rect, 0.0, Color32::BLACK);
 
-    if let Some(tex) = texture {
+    if let Some(tex) = texture.as_ref() {
         let avail = rect.size();
         let [tw, th] = tex.size();
         let img_size = vec2(tw as f32, th as f32);
@@ -305,7 +384,7 @@ fn draw_video_view(
         );
     } else {
         let center = rect.center();
-        let (label, color) = if player_ready {
+        let (label, color) = if !player_ready {
             (app.i18n.t("video-loading"), Semantic::FG_MUTED)
         } else {
             (
@@ -322,14 +401,54 @@ fn draw_video_view(
         );
     }
 
-    let controls_y = rect.bottom() - 48.0;
+    let controls_h = 72.0;
+    let controls_y = rect.bottom() - controls_h;
+    let bar_margin = 24.0;
+    let bar_rect = egui::Rect::from_min_max(
+        egui::pos2(rect.left() + bar_margin, controls_y + 28.0),
+        egui::pos2(rect.right() - bar_margin, controls_y + 40.0),
+    );
+
+    if duration_secs > 0.0 && ui.is_rect_visible(bar_rect) {
+        ui.painter()
+            .rect_filled(bar_rect, 4.0, Palette::SURFACE_RAISED);
+        let fill_w = bar_rect.width() * position_fraction.clamp(0.0, 1.0);
+        if fill_w > 0.0 {
+            ui.painter().rect_filled(
+                egui::Rect::from_min_size(bar_rect.min, vec2(fill_w, bar_rect.height())),
+                4.0,
+                Palette::ACCENT,
+            );
+        }
+        let seek_resp = ui.allocate_rect(bar_rect, Sense::click_and_drag());
+        if seek_resp.clicked() || seek_resp.dragged() {
+            if let Some(pos) = seek_resp.interact_pointer_pos() {
+                let frac = ((pos.x - bar_rect.left()) / bar_rect.width()).clamp(0.0, 1.0);
+                app.seek_video(frac, ui.ctx());
+            }
+        }
+
+        let time_label = app
+            .i18n
+            .t("video-time")
+            .replace("{current}", &format_time(position_secs))
+            .replace("{total}", &format_time(duration_secs));
+        ui.painter().text(
+            bar_rect.left_bottom() + vec2(0.0, 14.0),
+            Align2::LEFT_TOP,
+            time_label,
+            egui::FontId::monospace(11.0),
+            Semantic::FG_MUTED,
+        );
+    }
+
     let play_label = if playing {
         app.i18n.t("video-pause").to_string()
     } else {
         app.i18n.t("video-play").to_string()
     };
     let btn_rect = egui::Rect::from_center_size(
-        egui::pos2(rect.center().x, controls_y),
+        egui::pos2(rect.center().x, controls_y + 12.0),
         vec2(120.0, 32.0),
     );
     let resp = ui.allocate_rect(btn_rect, Sense::click());
@@ -363,6 +482,75 @@ fn draw_video_view(
         rect.left_bottom() + vec2(12.0, -8.0),
         Align2::LEFT_BOTTOM,
         path.display().to_string(),
+        egui::FontId::monospace(11.0),
+        Semantic::FG_MUTED,
+    );
+}
+
+fn format_time(secs: f32) -> String {
+    let total = secs.max(0.0) as u32;
+    let h = total / 3600;
+    let m = (total % 3600) / 60;
+    let s = total % 60;
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
+}
+
+fn draw_status_bar(app: &LookApp, ui: &mut Ui) {
+    let rect = ui.max_rect();
+    let bar_h = 22.0;
+    let bar_rect = egui::Rect::from_min_max(
+        egui::pos2(rect.left(), rect.bottom() - bar_h),
+        egui::pos2(rect.right(), rect.bottom()),
+    );
+    if !ui.is_rect_visible(bar_rect) {
+        return;
+    }
+    ui.painter()
+        .rect_filled(bar_rect, 0.0, Color32::from_rgba_unmultiplied(0x11, 0x11, 0x13, 210));
+
+    let mut parts = Vec::new();
+    if !app.counter_label().is_empty() {
+        parts.push(app.counter_label());
+    }
+    match &app.media {
+        Some(LoadedMedia::Image {
+            native_width,
+            native_height,
+            width,
+            height,
+            ..
+        }) => {
+            let label = app
+                .i18n
+                .t("status-resolution")
+                .replace("{width}", &native_width.to_string())
+                .replace("{height}", &native_height.to_string());
+            parts.push(label);
+            if width != native_width || height != native_height {
+                parts.push(format!("({width}×{height})"));
+            }
+        }
+        Some(LoadedMedia::Video { info, .. }) => {
+            if info.width > 0 && info.height > 0 {
+                parts.push(format!("{}×{}", info.width, info.height));
+            }
+            if info.duration_secs > 0.0 {
+                parts.push(format_time(info.duration_secs));
+            }
+        }
+        _ => {}
+    }
+    if parts.is_empty() {
+        return;
+    }
+    ui.painter().text(
+        bar_rect.left_center() + vec2(12.0, 0.0),
+        Align2::LEFT_CENTER,
+        parts.join(" · "),
         egui::FontId::monospace(11.0),
         Semantic::FG_MUTED,
     );
@@ -454,8 +642,8 @@ fn floating_toolbar(app: &mut LookApp, ui: &mut Ui, viewport_size: Vec2) {
         );
         ui.separator();
         match &app.media {
-            Some(LoadedMedia::Image { decoded, .. }) => {
-                let img_size = vec2(decoded.width as f32, decoded.height as f32);
+            Some(LoadedMedia::Image { width, height, .. }) => {
+                let img_size = vec2(*width as f32, *height as f32);
                 if icon_button(ui, "Fit", app.i18n.t("toolbar-fit")).clicked() {
                     app.fit_image();
                     app.touch();
@@ -483,6 +671,14 @@ fn floating_toolbar(app: &mut LookApp, ui: &mut Ui, viewport_size: Vec2) {
                         app.toggle_video_playback();
                         app.touch();
                     }
+                    if icon_button(ui, "⏮", app.i18n.t("video-frame-prev")).clicked() {
+                        app.step_video_frame(false, ui.ctx());
+                        app.touch();
+                    }
+                    if icon_button(ui, "⏭", app.i18n.t("video-frame-next")).clicked() {
+                        app.step_video_frame(true, ui.ctx());
+                        app.touch();
+                    }
                 }
             Some(LoadedMedia::Model { .. }) => {
                 if icon_button(ui, "3D", app.i18n.t("model-solid")).clicked() {
@@ -502,7 +698,7 @@ fn floating_toolbar(app: &mut LookApp, ui: &mut Ui, viewport_size: Vec2) {
                     app.touch();
                 }
             }
-            None => {}
+            None | Some(LoadedMedia::Loading { .. }) => {}
         }
         if icon_button(ui, "ℹ", app.i18n.t("toolbar-info")).clicked() {
             app.info_open = !app.info_open;
@@ -519,12 +715,35 @@ fn info_panel(app: &mut LookApp, ui: &mut Ui) {
     }
     ui.separator();
     match &app.media {
-        Some(LoadedMedia::Image { decoded, .. }) => {
-            ui.label(format!("{} × {}", decoded.width, decoded.height));
-            ui.label(format!("{:.2} MP", decoded.megapixels()));
+        Some(LoadedMedia::Image {
+            width,
+            height,
+            native_width,
+            native_height,
+            ..
+        }) => {
+            ui.label(format!(
+                "{} × {} ({:.2} MP)",
+                native_width,
+                native_height,
+                (*native_width as f64 * *native_height as f64 / 1_000_000.0)
+            ));
+            if width != native_width || height != native_height {
+                ui.label(format!("Display buffer: {width} × {height}"));
+            }
         }
-        Some(LoadedMedia::Video { info, .. }) => {
+        Some(LoadedMedia::Loading { .. }) => {
+            ui.label(app.i18n.t("media-loading"));
+        }
+        Some(LoadedMedia::Video { info, duration_secs, .. }) => {
             ui.label(format!("{} · {}", info.format, info.file_size_label()));
+            let dur = (*duration_secs).max(info.duration_secs);
+            if dur > 0.0 {
+                ui.label(format!("Duration: {}", format_time(dur)));
+            }
+            if info.width > 0 {
+                ui.label(format!("{}×{}", info.width, info.height));
+            }
             ui.label(&info.notes);
         }
         Some(LoadedMedia::Model { info, .. }) => {
@@ -611,22 +830,24 @@ fn open_file_dialog(app: &mut LookApp) {
 
 fn handle_shortcuts(app: &mut LookApp, ctx: &egui::Context) {
     let viewport_size = ctx.screen_rect().size();
-    let img_size = match &app.media {
-        Some(LoadedMedia::Image { decoded, .. }) => {
-            vec2(decoded.width as f32, decoded.height as f32)
-        }
-        _ => Vec2::ZERO,
-    };
+    let img_size = app.media.as_ref().and_then(|m| m.image_size()).unwrap_or(Vec2::ZERO);
     let is_image = img_size != Vec2::ZERO;
+    let is_video = matches!(&app.media, Some(LoadedMedia::Video { .. }));
 
     ctx.input(|i| {
         if i.modifiers.ctrl && i.key_pressed(egui::Key::O) {
             open_file_dialog(app);
         }
-        if i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::ArrowUp) {
+        if i.key_pressed(egui::Key::ArrowLeft) && !(is_video && i.modifiers.shift) {
             app.navigate(-1);
         }
-        if i.key_pressed(egui::Key::ArrowRight) || i.key_pressed(egui::Key::ArrowDown) {
+        if i.key_pressed(egui::Key::ArrowRight) && !(is_video && i.modifiers.shift) {
+            app.navigate(1);
+        }
+        if i.key_pressed(egui::Key::ArrowUp) {
+            app.navigate(-1);
+        }
+        if i.key_pressed(egui::Key::ArrowDown) {
             app.navigate(1);
         }
         if i.key_pressed(egui::Key::PageUp) {
@@ -641,14 +862,35 @@ fn handle_shortcuts(app: &mut LookApp, ctx: &egui::Context) {
         if i.key_pressed(egui::Key::End) && !app.folder_files.is_empty() {
             app.navigate_to_index(app.folder_files.len() - 1);
         }
-        if matches!(&app.media, Some(LoadedMedia::Video { .. })) && i.key_pressed(egui::Key::Space) {
+        if is_video && i.key_pressed(egui::Key::Space) {
             app.toggle_video_playback();
+        }
+        if is_video && i.key_pressed(egui::Key::Comma) {
+            app.step_video_frame(false, ctx);
+            app.touch();
+        }
+        if is_video && i.key_pressed(egui::Key::Period) {
+            app.step_video_frame(true, ctx);
+            app.touch();
+        }
+        if is_video && i.key_pressed(egui::Key::ArrowLeft) && i.modifiers.shift {
+            app.step_video_frame(false, ctx);
+            app.touch();
+        }
+        if is_video && i.key_pressed(egui::Key::ArrowRight) && i.modifiers.shift {
+            app.step_video_frame(true, ctx);
+            app.touch();
         }
         if i.key_pressed(egui::Key::I) {
             app.info_open = !app.info_open;
             app.touch();
         }
-        if i.key_pressed(egui::Key::Escape) {
+        if i.key_pressed(egui::Key::F11) {
+            app.toggle_fullscreen(ctx);
+        }
+        if i.key_pressed(egui::Key::Escape) && app.is_fullscreen() {
+            app.toggle_fullscreen(ctx);
+        } else if i.key_pressed(egui::Key::Escape) {
             if app.settings_open {
                 app.settings_open = false;
             } else if app.info_open {
@@ -681,21 +923,61 @@ fn handle_shortcuts(app: &mut LookApp, ctx: &egui::Context) {
     });
 }
 
+fn draw_loading_state(app: &LookApp, ui: &mut Ui, rect: egui::Rect) {
+    ui.painter().rect_filled(rect, 0.0, Semantic::BG_VIEWPORT);
+    let center = rect.center();
+    let t = app.load_started.elapsed().as_secs_f32();
+    let angle = t * 4.0;
+    let r = 14.0;
+    for i in 0..8 {
+        let a = angle + i as f32 * std::f32::consts::FRAC_PI_4;
+        let alpha = (255.0 * (1.0 - i as f32 / 8.0)).max(40.0) as u8;
+        let p = center + vec2(a.cos(), a.sin()) * r;
+        ui.painter().circle_filled(
+            p,
+            2.5,
+            Color32::from_rgba_unmultiplied(
+                Palette::ACCENT.r(),
+                Palette::ACCENT.g(),
+                Palette::ACCENT.b(),
+                alpha,
+            ),
+        );
+    }
+    ui.painter().text(
+        center + vec2(0.0, 28.0),
+        Align2::CENTER_CENTER,
+        app.i18n.t("media-loading"),
+        egui::FontId::proportional(15.0),
+        Semantic::FG_MUTED,
+    );
+    ui.ctx().request_repaint();
+}
+
 fn paint_checkerboard(painter: &egui::Painter, rect: egui::Rect) {
-    let cell = 12.0;
+    // Fast two-tone fill — avoids hundreds of small rects per frame.
     let light = Color32::from_rgb(0x2A, 0x2D, 0x35);
     let dark = Color32::from_rgb(0x22, 0x25, 0x2C);
+    painter.rect_filled(rect, 0.0, dark);
+    let cell = 16.0;
     let cols = (rect.width() / cell).ceil() as i32;
     let rows = (rect.height() / cell).ceil() as i32;
-    for row in 0..rows {
-        for col in 0..cols {
-            let color = if (row + col) % 2 == 0 { light } else { dark };
+    for row in (0..rows).step_by(2) {
+        for col in (0..cols).step_by(2) {
             let min = rect.min + vec2(col as f32 * cell, row as f32 * cell);
             let size = vec2(
                 cell.min(rect.right() - min.x),
                 cell.min(rect.bottom() - min.y),
             );
-            painter.rect_filled(egui::Rect::from_min_size(min, size), 0.0, color);
+            painter.rect_filled(egui::Rect::from_min_size(min, size), 0.0, light);
+            let min2 = min + vec2(cell, cell);
+            if min2.x < rect.right() && min2.y < rect.bottom() {
+                let size2 = vec2(
+                    cell.min(rect.right() - min2.x),
+                    cell.min(rect.bottom() - min2.y),
+                );
+                painter.rect_filled(egui::Rect::from_min_size(min2, size2), 0.0, light);
+            }
         }
     }
 }

@@ -34,6 +34,7 @@ impl LookApp {
         self.fit_mode = false;
         self.zoom = 1.0;
         self.pan = Vec2::ZERO;
+        self.request_full_res_if_needed();
     }
 
     pub fn reset_image_view(&mut self) {

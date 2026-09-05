@@ -26,12 +26,16 @@ impl Default for OrbitCamera {
 }
 
 impl OrbitCamera {
-    pub fn fit_bounds(_bounds: &cap_model::Bounds) -> Self {
+    pub fn fit_bounds(bounds: &cap_model::Bounds) -> Self {
+        let dx = bounds.max[0] - bounds.min[0];
+        let dy = bounds.max[1] - bounds.min[1];
+        let dz = bounds.max[2] - bounds.min[2];
+        let max_extent = dx.max(dy).max(dz).max(0.001);
         Self {
             yaw: 0.6,
             pitch: 0.35,
-            distance: 2.8,
-            target: [0.0, 0.0, 0.0],
+            distance: max_extent * 2.2,
+            target: bounds.center(),
         }
     }
 
@@ -190,10 +194,12 @@ fn draw_wireframe(
 }
 
 fn draw_solid(painter: &egui::Painter, mesh: &MeshData, projected: &[Option<Pos2>], mvp: Mat4) {
-    let light = Vec3::new(0.4, 0.8, 0.3).normalize();
+    let key = Vec3::new(0.35, 0.75, 0.45).normalize();
+    let fill = Vec3::new(-0.5, 0.3, -0.6).normalize();
+    let ambient = 0.22_f32;
     let mut tris: Vec<(f32, [Pos2; 3], Color32)> = Vec::new();
 
-    let mut push_tri = |a: usize, b: usize, c: usize| {
+    let push_tri = |a: usize, b: usize, c: usize| {
         let va = Vec3::from_array(*mesh.vertices.get(a)?);
         let vb = Vec3::from_array(*mesh.vertices.get(b)?);
         let vc = Vec3::from_array(*mesh.vertices.get(c)?);
@@ -204,12 +210,14 @@ fn draw_solid(painter: &egui::Painter, mesh: &MeshData, projected: &[Option<Pos2
         if normal.length_squared() < f32::EPSILON {
             return None;
         }
-        let intensity = normal.dot(light).max(0.0);
-        let shade = (0.25 + intensity * 0.75).clamp(0.15, 1.0);
+        let intensity = (ambient
+            + normal.dot(key).max(0.0) * 0.55
+            + normal.dot(fill).max(0.0) * 0.25)
+            .clamp(0.12, 1.0);
         let color = Color32::from_rgb(
-            (Palette::ACCENT.r() as f32 * shade) as u8,
-            (Palette::ACCENT.g() as f32 * shade) as u8,
-            (Palette::ACCENT.b() as f32 * shade + 20.0 * shade) as u8,
+            (Palette::ACCENT.r() as f32 * intensity) as u8,
+            (Palette::ACCENT.g() as f32 * intensity) as u8,
+            (Palette::ACCENT.b() as f32 * intensity + 18.0 * intensity) as u8,
         );
         let depth = (view_depth(va.to_array(), mvp)
             + view_depth(vb.to_array(), mvp)

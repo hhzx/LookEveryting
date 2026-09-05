@@ -1,6 +1,8 @@
 //! Video file metadata and in-app playback.
 
+mod mf_runtime;
 mod player;
+mod yuv;
 
 use std::path::Path;
 
@@ -26,6 +28,9 @@ pub struct VideoInfo {
     pub file_size: u64,
     pub playable_in_app: bool,
     pub notes: String,
+    pub duration_secs: f32,
+    pub width: u32,
+    pub height: u32,
 }
 
 impl VideoInfo {
@@ -57,6 +62,9 @@ impl VideoInfo {
             file_size,
             playable_in_app,
             notes,
+            duration_secs: 0.0,
+            width: 0,
+            height: 0,
         })
     }
 

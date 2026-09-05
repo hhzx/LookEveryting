@@ -23,6 +23,7 @@ egui.workspace = true
 rfd = "0.15"
 walkdir = "2"
 open = "5"
+crossbeam-channel = "0.5"
 
 [dev-dependencies]
 eframe.workspace = true

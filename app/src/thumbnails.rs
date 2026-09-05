@@ -4,26 +4,31 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use cap_core::{classify_extension, MediaKind};
-use cap_image::decode_thumbnail;
+use cap_image::DecodedImage;
 use cap_ui::colors::{Palette, Semantic};
 use cap_ui::spacing::component;
-use egui::{ColorImage, Frame, RichText, TextureHandle, Ui, Vec2};
+use egui::{ColorImage, TextureHandle, Ui, Vec2};
 
 use crate::app::LookApp;
 
+const THUMBS_PER_FRAME: usize = 2;
+
 pub struct ThumbnailCache {
-    textures: HashMap<String, TextureHandle>,
+    pub textures: HashMap<String, TextureHandle>,
+    pub pending: HashMap<String, DecodedImage>,
 }
 
 impl ThumbnailCache {
     pub fn new() -> Self {
         Self {
             textures: HashMap::new(),
+            pending: HashMap::new(),
         }
     }
 
     pub fn clear(&mut self) {
         self.textures.clear();
+        self.pending.clear();
     }
 }
 
@@ -34,25 +39,57 @@ impl Default for ThumbnailCache {
 }
 
 pub fn ensure_thumbnails(app: &mut LookApp, ctx: &egui::Context) {
-    let size = (component::THUMBNAIL_STRIP_SIZE * 2.5) as u32;
-    for path in &app.folder_files {
+    // Upload decoded thumbs from background thread.
+    let keys: Vec<String> = app.thumbnails.pending.keys().cloned().collect();
+    for key in keys.into_iter().take(THUMBS_PER_FRAME) {
+        if let Some(decoded) = app.thumbnails.pending.remove(&key) {
+            let image = ColorImage::from_rgba_unmultiplied(
+                [decoded.width as usize, decoded.height as usize],
+                &decoded.rgba,
+            );
+            let handle = ctx.load_texture(
+                format!("thumb-{key}"),
+                image,
+                egui::TextureOptions::LINEAR,
+            );
+            app.thumbnails.textures.insert(key, handle);
+        }
+    }
+
+    // Queue background thumbnail jobs — current file and neighbors first.
+    let len = app.folder_files.len();
+    if len == 0 {
+        return;
+    }
+    let cur = app.current_index;
+    let mut order = Vec::with_capacity(len);
+    order.push(cur);
+    for d in 1..len {
+        order.push((cur + d) % len);
+        if order.len() >= len {
+            break;
+        }
+        order.push((cur + len - d) % len);
+        if order.len() >= len {
+            break;
+        }
+    }
+
+    let mut queued = 0usize;
+    for idx in order {
+        if queued >= THUMBS_PER_FRAME {
+            break;
+        }
+        let path = &app.folder_files[idx];
         let key = path.to_string_lossy().to_string();
-        if app.thumbnails.textures.contains_key(&key) {
+        if app.thumbnails.textures.contains_key(&key)
+            || app.thumbnails.pending.contains_key(&key)
+        {
             continue;
         }
         if classify_extension(path) == Some(MediaKind::Image) {
-            if let Ok(decoded) = decode_thumbnail(path, size) {
-                let image = ColorImage::from_rgba_unmultiplied(
-                    [decoded.width as usize, decoded.height as usize],
-                    &decoded.rgba,
-                );
-                let handle = ctx.load_texture(
-                    format!("thumb-{key}"),
-                    image,
-                    egui::TextureOptions::LINEAR,
-                );
-                app.thumbnails.textures.insert(key, handle);
-            }
+            app.loader.request_thumbnail(path.clone());
+            queued += 1;
         }
     }
 }

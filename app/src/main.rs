@@ -1,7 +1,9 @@
 mod app;
 mod image_viewport;
+mod loader;
 mod thumbnails;
 mod ui;
+mod video_thread;
 
 use std::path::PathBuf;
 
@@ -54,8 +56,12 @@ impl LookEverytingApp {
 
 impl eframe::App for LookEverytingApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.inner.poll_loader();
+        self.inner.poll_video(ctx);
         ui::draw(&mut self.inner, ctx);
-        let ms = if self.inner.last_interaction.elapsed().as_millis() < 500
+        self.inner.flush_settings_if_dirty();
+        let ms = if self.inner.is_loading()
+            || self.inner.last_interaction.elapsed().as_millis() < 500
             || self.inner.video_is_playing()
         {
             6
