@@ -22,7 +22,7 @@ struct Uniforms {
     mvp: [[f32; 4]; 4],
     light_dir: [f32; 4],
     base_color: [f32; 4],
-    /// x=metallic, y=roughness, z=has_albedo (1/0), w=pad
+    /// x=metallic, y=roughness, z=has_albedo (1/0), w=has_normal (1/0)
     params: [f32; 4],
 }
 
@@ -47,10 +47,12 @@ struct UploadedMesh {
     uniform_buf: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     _albedo_tex: wgpu::Texture,
+    _normal_tex: wgpu::Texture,
     base_color: [f32; 4],
     metallic: f32,
     roughness: f32,
     has_albedo: bool,
+    has_normal: bool,
 }
 
 struct OffscreenTargets {
@@ -99,6 +101,16 @@ impl MeshRenderResources {
                     binding: 2,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
                     count: None,
                 },
             ],
@@ -245,48 +257,25 @@ impl MeshRenderResources {
         });
 
         let has_albedo = mesh.albedo.as_ref().is_some_and(|a| !a.rgba.is_empty());
-        let albedo_tex = if let Some(map) = mesh.albedo.as_ref().filter(|a| !a.rgba.is_empty()) {
-            device.create_texture_with_data(
-                queue,
-                &wgpu::TextureDescriptor {
-                    label: Some("mesh_albedo"),
-                    size: wgpu::Extent3d {
-                        width: map.width.max(1),
-                        height: map.height.max(1),
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                    view_formats: &[],
-                },
-                wgpu::util::TextureDataOrder::LayerMajor,
-                &map.rgba,
-            )
-        } else {
-            device.create_texture_with_data(
-                queue,
-                &wgpu::TextureDescriptor {
-                    label: Some("mesh_white"),
-                    size: wgpu::Extent3d {
-                        width: 1,
-                        height: 1,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                    view_formats: &[],
-                },
-                wgpu::util::TextureDataOrder::LayerMajor,
-                &[255, 255, 255, 255],
-            )
-        };
+        let has_normal = mesh.normal.as_ref().is_some_and(|a| !a.rgba.is_empty());
+        let albedo_tex = create_rgba_tex(
+            device,
+            queue,
+            "mesh_albedo",
+            mesh.albedo.as_ref(),
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            &[255, 255, 255, 255],
+        );
+        let normal_tex = create_rgba_tex(
+            device,
+            queue,
+            "mesh_normal",
+            mesh.normal.as_ref(),
+            wgpu::TextureFormat::Rgba8Unorm,
+            &[128, 128, 255, 255],
+        );
         let albedo_view = albedo_tex.create_view(&Default::default());
+        let normal_view = normal_tex.create_view(&Default::default());
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("mesh_uniforms"),
@@ -304,6 +293,10 @@ impl MeshRenderResources {
                     binding: 2,
                     resource: wgpu::BindingResource::Sampler(&self.sampler),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&normal_view),
+                },
             ],
         });
 
@@ -314,10 +307,12 @@ impl MeshRenderResources {
             uniform_buf,
             bind_group,
             _albedo_tex: albedo_tex,
+            _normal_tex: normal_tex,
             base_color: mesh.base_color,
             metallic: mesh.metallic,
             roughness: mesh.roughness,
             has_albedo,
+            has_normal,
         });
     }
 
@@ -392,6 +387,57 @@ impl MeshRenderResources {
 }
 
 use wgpu::util::DeviceExt;
+
+fn create_rgba_tex(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    label: &str,
+    map: Option<&cap_model::TextureMap>,
+    format: wgpu::TextureFormat,
+    fallback: &[u8; 4],
+) -> wgpu::Texture {
+    if let Some(map) = map.filter(|a| !a.rgba.is_empty()) {
+        device.create_texture_with_data(
+            queue,
+            &wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width: map.width.max(1),
+                    height: map.height.max(1),
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            &map.rgba,
+        )
+    } else {
+        device.create_texture_with_data(
+            queue,
+            &wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            fallback,
+        )
+    }
+}
 
 fn build_gpu_mesh(mesh: &MeshData) -> (Vec<GpuVertex>, Vec<u32>) {
     let mut indices: Vec<u32> = if mesh.indices.is_empty() {
@@ -487,7 +533,7 @@ impl CallbackTrait for MeshPaintCallback {
                 mesh.metallic,
                 mesh.roughness,
                 if mesh.has_albedo { 1.0 } else { 0.0 },
-                0.0,
+                if mesh.has_normal { 1.0 } else { 0.0 },
             ],
         };
         queue.write_buffer(&mesh.uniform_buf, 0, bytemuck::bytes_of(&uniforms));
@@ -568,6 +614,7 @@ struct Uniforms {
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var albedo_tex: texture_2d<f32>;
 @group(0) @binding(2) var albedo_samp: sampler;
+@group(0) @binding(3) var normal_tex: texture_2d<f32>;
 
 struct VsIn {
     @location(0) position: vec3<f32>,
@@ -578,6 +625,7 @@ struct VsOut {
     @builtin(position) clip_pos: vec4<f32>,
     @location(0) normal: vec3<f32>,
     @location(1) uv: vec2<f32>,
+    @location(2) world_pos: vec3<f32>,
 };
 
 @vertex
@@ -586,26 +634,65 @@ fn vs_main(v: VsIn) -> VsOut {
     o.clip_pos = u.mvp * vec4<f32>(v.position, 1.0);
     o.normal = normalize(v.normal);
     o.uv = v.uv;
+    o.world_pos = v.position;
     return o;
+}
+
+fn env_irradiance(n: vec3<f32>) -> vec3<f32> {
+    let sky = vec3<f32>(0.55, 0.65, 0.88);
+    let ground = vec3<f32>(0.14, 0.12, 0.10);
+    return mix(ground, sky, clamp(n.y * 0.5 + 0.5, 0.0, 1.0));
+}
+
+fn env_specular(r: vec3<f32>, roughness: f32) -> vec3<f32> {
+    let sky = vec3<f32>(0.78, 0.84, 0.98);
+    let horizon = vec3<f32>(0.38, 0.40, 0.45);
+    let ground = vec3<f32>(0.08, 0.07, 0.06);
+    var col = mix(horizon, sky, clamp(r.y * 1.4, 0.0, 1.0));
+    col = mix(ground, col, clamp(r.y + 0.55, 0.0, 1.0));
+    return mix(col, env_irradiance(r), roughness);
+}
+
+fn perturb_normal(n: vec3<f32>, pos: vec3<f32>, uv: vec2<f32>, map_n: vec3<f32>) -> vec3<f32> {
+    let dp1 = dpdx(pos);
+    let dp2 = dpdy(pos);
+    let duv1 = dpdx(uv);
+    let duv2 = dpdy(uv);
+    let dp2perp = cross(dp2, n);
+    let dp1perp = cross(n, dp1);
+    var t = dp2perp * duv1.x + dp1perp * duv2.x;
+    var b = dp2perp * duv1.y + dp1perp * duv2.y;
+    let invmax = inverseSqrt(max(dot(t, t), dot(b, b)));
+    t = t * invmax;
+    b = b * invmax;
+    let tbn = mat3x3<f32>(t, b, n);
+    return normalize(tbn * map_n);
 }
 
 @fragment
 fn fs_main(i: VsOut) -> @location(0) vec4<f32> {
-    let n = normalize(i.normal);
+    var n = normalize(i.normal);
+    if (u.params.w > 0.5) {
+        let nm = textureSample(normal_tex, albedo_samp, i.uv).xyz * 2.0 - 1.0;
+        n = perturb_normal(n, i.world_pos, i.uv, nm);
+    }
     let l = normalize(u.light_dir.xyz);
-    let ambient = 0.18;
-    let diff = max(dot(n, l), 0.0) * 0.65;
-    let fill = max(dot(n, normalize(vec3<f32>(-0.5, 0.3, -0.6))), 0.0) * 0.2;
+    let v = normalize(vec3<f32>(0.0, 0.15, 1.0) - i.world_pos * 0.15);
+    let r = reflect(-v, n);
     var albedo = u.base_color.rgb;
     if (u.params.z > 0.5) {
         albedo = albedo * textureSample(albedo_tex, albedo_samp, i.uv).rgb;
     }
     let metallic = clamp(u.params.x, 0.0, 1.0);
     let roughness = clamp(u.params.y, 0.04, 1.0);
-    let h = normalize(l + vec3<f32>(0.0, 0.0, 1.0));
-    let spec = pow(max(dot(n, h), 0.0), mix(8.0, 64.0, 1.0 - roughness)) * mix(0.04, 0.45, metallic);
-    let intensity = clamp(ambient + diff + fill, 0.08, 1.0);
-    let color = albedo * intensity + vec3<f32>(spec);
+    let ndotl = max(dot(n, l), 0.0);
+    let h = normalize(l + v);
+    let ndoth = max(dot(n, h), 0.0);
+    let f0 = mix(vec3<f32>(0.04), albedo, metallic);
+    let diffuse = albedo * (1.0 - metallic) * (env_irradiance(n) * 0.55 + ndotl * 0.45);
+    let spec_lobe = pow(ndoth, mix(8.0, 96.0, 1.0 - roughness));
+    let specular = f0 * (env_specular(r, roughness) * 0.65 + spec_lobe * 0.55);
+    let color = diffuse + specular;
     return vec4<f32>(color, u.base_color.a);
 }
 "#;

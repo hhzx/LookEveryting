@@ -123,15 +123,15 @@
 - [ ] SVG 基础渲染（可选，参考 ImageGlass）
 
 **视频**
-- [x] MF 硬件变换偏好开关（完整 DXVA/D3D11 设备管理仍待）
+- [x] MF 硬件变换偏好开关（DXVA/D3D11 DXGI device manager）
 - [ ] 精确 seek（关键帧对齐，参考 mpv `hr-seek` 语义）
 - [x] 音频轨播放（WASAPI/cpal）
 - [ ] 评估可选 **libmpv** 后端（作为“兼容模式”，默认仍 MF）
 
 **3D**
 - [x] **wgpu 真 3D 管线**（实体 + 深度 PaintCallback；线框仍 CPU）
-- [ ] 基础 PBR（albedo + metallic-roughness + normal）
-- [ ] 双灯 + IBL 简化版（学习 F3D / glTF Sample Viewer）
+- [x] 基础 PBR（albedo + metallic-roughness + normal）
+- [x] 双灯 + IBL 简化版（学习 F3D / glTF Sample Viewer）
 - [ ] 大网格简化/分批绘制，保证 60fps 交互
 
 **验收标准**
@@ -144,16 +144,16 @@
 ### Phase C — 专业能力（约 3–4 周）· 对标 nomacs / VLC / F3D 进阶
 
 **图片**
-- [ ] RAW 预览（可走外部解码器或精简依赖）
-- [ ] 无损旋转 / 翻转
+- [x] RAW 预览（可走外部解码器或精简依赖）
+- [x] 无损旋转 / 翻转
 - [x] 批量重命名（轻量，参考 nomacs，不做完整 DAM）
 
 **视频**
 - [x] 视频首帧缩略图（filmstrip）
 - [x] A-B 循环
-- [ ] 多音轨切换
-- [ ] ASS / 内嵌字幕
-- [ ] 材质贴图完整预览
+- [x] 多音轨切换
+- [x] ASS / 内嵌字幕（侧车优先；MF 文本轨回退）
+- [x] 材质贴图完整预览（albedo + normal + MR）
 - [ ] 网格/线框/法线/UV 调试视图
 - [ ] 动画 glTF 简易播放（若成本可控）
 - [ ] 更多格式：PLY / USDZ（评估体积）
@@ -166,12 +166,12 @@
 
 ### Phase D — 产品化（与功能并行）· 对标成熟桌面软件
 
-- [ ] 安装包（MSI / 便携 zip 双通道）
+- [x] 安装包（MSI / 便携 zip 双通道）
 - [ ] 文件关联稳定性测试矩阵
-- [ ] 自动更新（可选）
+- [x] 自动更新（可选，`scripts/check-update.ps1`）
 - [ ] 崩溃上报 / 日志开关
-- [ ] 浅色主题 + 跟随系统
-- [ ] 文档：快捷键表、格式支持表、故障排查（缺编解码器等）
+- [x] 浅色主题 + 跟随系统
+- [x] 文档：快捷键表、格式支持表、故障排查（缺编解码器等）
 
 ---
 

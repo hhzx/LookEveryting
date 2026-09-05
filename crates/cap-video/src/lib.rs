@@ -5,6 +5,7 @@ mod audio;
 mod dxva;
 mod mf_runtime;
 mod player;
+mod subs;
 mod thumb;
 mod yuv;
 
@@ -15,6 +16,7 @@ use thiserror::Error;
 
 pub use audio::{AudioChunk, AudioDecoder, AudioError, AudioFormat, AudioTrackInfo};
 pub use player::{PlayerError, VideoFrame, VideoPlayer};
+pub use subs::{extract_embedded_subtitles, EmbeddedCue};
 pub use thumb::decode_thumbnail;
 
 #[derive(Debug, Error)]

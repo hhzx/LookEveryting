@@ -20,7 +20,7 @@
 - [x] MF DXVA/D3D11 硬解（`prefer_hw_decode` + DXGI device manager）
 - [x] 音频轨 WASAPI/cpal 播放（与视频时钟软同步；音量/静音生效）
 - [x] 邻居预取 ±2
-- [x] 侧车 SRT 字幕叠加（设置 / `V` 开关）
+- [x] 侧车 SRT 字幕叠加（设置 / `V` 开关）；无侧车时尝试 MF 内嵌文本字幕轨
 - [x] 播放速度 0.5x–2.0x（`[` `]` / 工具栏按钮）
 
 ## v0.7 — 专业能力
@@ -28,7 +28,7 @@
 - [x] 视频/3D 缩略图真实首帧
 - [x] A-B 循环
 - [x] ASS/SSA 侧车字幕 + 多音轨切换（`T`）
-- [x] glTF PBR-lite（base color + albedo 贴图 + metallic/roughness）
+- [x] glTF PBR（base color + albedo + metallic/roughness + normal map + 解析 IBL）
 - [x] 轻量批量重命名
 - [x] RAW 预览（crude demosaic）
 - [x] 图片旋转 / 翻转（Ctrl+R / H / Shift+H）
@@ -41,5 +41,5 @@
 - [x] 主题跟随系统
 - [x] 格式支持表 `docs/FORMATS.md`
 - [x] 更新检查/下载（`scripts/check-update.ps1 -Download`）
-- [ ] MF 内嵌字幕轨（可选）
-- [ ] 完整 IBL / normal map（可选进阶）
+- [x] MF 内嵌文本字幕轨（SRT/SSA/WebVTT/SAMI；位图 PGS/VobSub 仍不支持）
+- [x] Normal map + 解析 IBL（无外部 HDR 环境贴图）

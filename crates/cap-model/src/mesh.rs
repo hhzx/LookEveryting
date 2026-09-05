@@ -55,16 +55,21 @@ pub struct MeshData {
     pub metallic: f32,
     pub roughness: f32,
     /// Optional albedo texture (RGBA8).
-    pub albedo: Option<AlbedoMap>,
+    pub albedo: Option<TextureMap>,
+    /// Optional tangent-space normal map (RGBA8, XYZ in RGB).
+    pub normal: Option<TextureMap>,
 }
 
-/// RGBA8 albedo map.
+/// RGBA8 texture map (albedo or normal).
 #[derive(Debug, Clone)]
-pub struct AlbedoMap {
+pub struct TextureMap {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
 }
+
+/// Alias kept for older call sites.
+pub type AlbedoMap = TextureMap;
 
 impl Default for MeshData {
     fn default() -> Self {
@@ -77,6 +82,7 @@ impl Default for MeshData {
             metallic: 0.0,
             roughness: 0.5,
             albedo: None,
+            normal: None,
         }
     }
 }
@@ -200,6 +206,36 @@ fn load_stl(path: &Path) -> Result<MeshData, ModelError> {
     })
 }
 
+fn gltf_image_to_map(img: &gltf::image::Data) -> Option<TextureMap> {
+    let rgba = match img.format {
+        gltf::image::Format::R8G8B8A8 => img.pixels.clone(),
+        gltf::image::Format::R8G8B8 => img
+            .pixels
+            .chunks(3)
+            .flat_map(|c| [c[0], c[1], c[2], 255])
+            .collect(),
+        gltf::image::Format::R8 => img
+            .pixels
+            .iter()
+            .flat_map(|&c| [c, c, c, 255])
+            .collect(),
+        gltf::image::Format::R8G8 => img
+            .pixels
+            .chunks(2)
+            .flat_map(|c| [c[0], c[1], 0, 255])
+            .collect(),
+        _ => return None,
+    };
+    if rgba.is_empty() {
+        return None;
+    }
+    Some(TextureMap {
+        width: img.width,
+        height: img.height,
+        rgba,
+    })
+}
+
 fn load_gltf(path: &Path) -> Result<MeshData, ModelError> {
     let (document, buffers, images) = gltf::import(path)?;
     let mut vertices = Vec::new();
@@ -210,6 +246,7 @@ fn load_gltf(path: &Path) -> Result<MeshData, ModelError> {
     let mut metallic = 0.0_f32;
     let mut roughness = 0.5_f32;
     let mut albedo = None;
+    let mut normal = None;
 
     for mesh in document.meshes() {
         for primitive in mesh.primitives() {
@@ -228,40 +265,25 @@ fn load_gltf(path: &Path) -> Result<MeshData, ModelError> {
                 .map(|tc| tc.into_f32().map(|[u, v]| [u, v]).collect())
                 .unwrap_or_else(|| vec![[0.0, 0.0]; count]);
 
-            if albedo.is_none() {
+            if albedo.is_none() || normal.is_none() {
                 let mat = primitive.material();
                 let pbr = mat.pbr_metallic_roughness();
-                base_color = pbr.base_color_factor();
-                metallic = pbr.metallic_factor();
-                roughness = pbr.roughness_factor();
-                if let Some(info) = pbr.base_color_texture() {
-                    let tex_idx = info.texture().source().index();
-                    if let Some(img) = images.get(tex_idx) {
-                        let rgba = match img.format {
-                            gltf::image::Format::R8G8B8A8 => img.pixels.clone(),
-                            gltf::image::Format::R8G8B8 => img
-                                .pixels
-                                .chunks(3)
-                                .flat_map(|c| [c[0], c[1], c[2], 255])
-                                .collect(),
-                            gltf::image::Format::R8 => img
-                                .pixels
-                                .iter()
-                                .flat_map(|&c| [c, c, c, 255])
-                                .collect(),
-                            gltf::image::Format::R8G8 => img
-                                .pixels
-                                .chunks(2)
-                                .flat_map(|c| [c[0], c[1], 0, 255])
-                                .collect(),
-                            _ => Vec::new(),
-                        };
-                        if !rgba.is_empty() {
-                            albedo = Some(AlbedoMap {
-                                width: img.width,
-                                height: img.height,
-                                rgba,
-                            });
+                if albedo.is_none() {
+                    base_color = pbr.base_color_factor();
+                    metallic = pbr.metallic_factor();
+                    roughness = pbr.roughness_factor();
+                    if let Some(info) = pbr.base_color_texture() {
+                        let tex_idx = info.texture().source().index();
+                        if let Some(img) = images.get(tex_idx) {
+                            albedo = gltf_image_to_map(img);
+                        }
+                    }
+                }
+                if normal.is_none() {
+                    if let Some(info) = mat.normal_texture() {
+                        let tex_idx = info.texture().source().index();
+                        if let Some(img) = images.get(tex_idx) {
+                            normal = gltf_image_to_map(img);
                         }
                     }
                 }
@@ -292,6 +314,7 @@ fn load_gltf(path: &Path) -> Result<MeshData, ModelError> {
         metallic,
         roughness,
         albedo,
+        normal,
     })
 }
 

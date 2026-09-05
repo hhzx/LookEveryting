@@ -7,7 +7,7 @@ use std::path::Path;
 use cap_core::MediaKind;
 use thiserror::Error;
 
-pub use mesh::{load_mesh, Bounds, MeshData};
+pub use mesh::{load_mesh, AlbedoMap, Bounds, MeshData, TextureMap};
 
 #[derive(Debug, Error)]
 pub enum ModelError {

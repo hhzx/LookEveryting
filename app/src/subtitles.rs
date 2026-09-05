@@ -23,7 +23,21 @@ impl Subtitles {
                 return Self::from_file(&path).ok();
             }
         }
-        None
+        // Fall back to embedded soft-subtitle tracks (MF).
+        let embedded = cap_video::extract_embedded_subtitles(video);
+        if embedded.is_empty() {
+            return None;
+        }
+        Some(Self {
+            cues: embedded
+                .into_iter()
+                .map(|c| SubCue {
+                    start_secs: c.start_secs,
+                    end_secs: c.end_secs,
+                    text: c.text,
+                })
+                .collect(),
+        })
     }
 
     pub fn from_file(path: &Path) -> Result<Self, String> {

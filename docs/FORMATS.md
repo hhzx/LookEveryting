@@ -16,7 +16,7 @@
 
 | 扩展名 | 说明 |
 |--------|------|
-| mp4 / m4v / mov / mkv / avi / wmv / webm | 内嵌播放；音频；seek；±5s；逐帧；侧车 `.srt`/`.ass`；倍速；A-B；多音轨 `T` |
+| mp4 / m4v / mov / mkv / avi / wmv / webm | 内嵌播放；音频；seek；±5s；逐帧；侧车 `.srt`/`.ass` 优先，否则 MF 内嵌文本字幕；倍速；A-B；多音轨 `T` |
 
 失败时可「用系统应用打开」。设置中可开关「优先硬件解码」与「显示字幕」。
 
@@ -26,10 +26,10 @@
 |--------|------|
 | stl | 常见切片网格 |
 | obj | tobj 加载 |
-| gltf / glb | glTF（含 base color / albedo 因子） |
+| gltf / glb | glTF（albedo + metallic/roughness + normal map） |
 | fbx | ufbx |
 
-轨道相机、线框/实体、渐变背景、HUD。实体着色走 **wgpu PaintCallback**（albedo 贴图 + metallic/roughness）；filmstrip 有 CPU 软光栅缩略图。
+轨道相机、线框/实体、渐变背景、HUD。实体着色走 **wgpu PaintCallback**（albedo + normal + metallic/roughness + 解析 IBL）；filmstrip 有 CPU 软光栅缩略图。
 
 ## 打包
 
