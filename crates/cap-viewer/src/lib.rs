@@ -1,9 +1,15 @@
-//! Software 3D viewport with orbit camera for egui.
+//! 3D model viewport rendering for LookEveryting (CPU fallback + wgpu).
+
+mod gpu_mesh;
+
+use std::sync::Arc;
 
 use cap_model::MeshData;
 use cap_ui::colors::{Palette, Semantic};
 use egui::{Color32, Pos2, Rect, Response, Sense, Ui, Vec2};
 use glam::{Mat4, Vec3, Vec4};
+
+pub use gpu_mesh::{MeshPaintCallback, MeshRenderResources};
 
 /// Orbit camera around a model centroid.
 #[derive(Debug, Clone)]
@@ -57,6 +63,15 @@ pub enum ViewportBg {
     Gradient,
 }
 
+/// Draw options for GPU path.
+#[derive(Default)]
+pub struct MeshDrawOpts {
+    /// When set, solid shading uses wgpu PaintCallback (depth-tested).
+    pub gpu_available: bool,
+    pub mesh_to_upload: Option<Arc<MeshData>>,
+    pub clear_gpu_mesh: bool,
+}
+
 /// Draw a mesh inside `rect`, returning interaction response.
 pub fn draw_mesh_viewport(
     ui: &mut Ui,
@@ -65,6 +80,18 @@ pub fn draw_mesh_viewport(
     camera: &mut OrbitCamera,
     wireframe: bool,
     bg: ViewportBg,
+) -> Response {
+    draw_mesh_viewport_ex(ui, rect, mesh, camera, wireframe, bg, MeshDrawOpts::default())
+}
+
+pub fn draw_mesh_viewport_ex(
+    ui: &mut Ui,
+    rect: Rect,
+    mesh: &MeshData,
+    camera: &mut OrbitCamera,
+    wireframe: bool,
+    bg: ViewportBg,
+    opts: MeshDrawOpts,
 ) -> Response {
     let response = ui.allocate_rect(rect, Sense::click_and_drag());
     let painter = ui.painter_at(rect);
@@ -101,27 +128,47 @@ pub fn draw_mesh_viewport(
     }
 
     let mvp = view_proj(camera, rect);
-    let mut projected: Vec<Option<Pos2>> = Vec::with_capacity(mesh.vertices.len());
-    for v in &mesh.vertices {
-        projected.push(project_vertex(*v, mvp, rect));
-    }
+    let ppp = ui.ctx().pixels_per_point();
+    let size_px = (
+        (rect.width() * ppp).round().max(1.0) as u32,
+        (rect.height() * ppp).round().max(1.0) as u32,
+    );
 
-    let visible = projected.iter().filter(|p| p.is_some()).count();
-    if visible == 0 {
-        painter.text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            "Unable to render model",
-            egui::FontId::proportional(14.0),
-            Semantic::FG_MUTED,
-        );
-        return response;
-    }
-
-    if wireframe {
-        draw_wireframe(&painter, mesh, &projected, Palette::ACCENT);
+    let use_gpu = opts.gpu_available && !wireframe;
+    if use_gpu {
+        ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(
+            rect,
+            MeshPaintCallback {
+                mvp,
+                wireframe: false,
+                size_px,
+                mesh_to_upload: opts.mesh_to_upload,
+                clear_mesh: opts.clear_gpu_mesh,
+            },
+        ));
     } else {
-        draw_solid(&painter, mesh, &projected, mvp);
+        let mut projected: Vec<Option<Pos2>> = Vec::with_capacity(mesh.vertices.len());
+        for v in &mesh.vertices {
+            projected.push(project_vertex(*v, mvp, rect));
+        }
+
+        let visible = projected.iter().filter(|p| p.is_some()).count();
+        if visible == 0 {
+            painter.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "Unable to render model",
+                egui::FontId::proportional(14.0),
+                Semantic::FG_MUTED,
+            );
+            return response;
+        }
+
+        if wireframe {
+            draw_wireframe(&painter, mesh, &projected, Palette::ACCENT);
+        } else {
+            draw_solid(&painter, mesh, &projected, mvp);
+        }
     }
 
     draw_axis_gizmo(&painter, rect);

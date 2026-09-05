@@ -49,7 +49,7 @@ pub enum LoadedMedia {
         path: PathBuf,
         wireframe: bool,
         bg: ViewportBg,
-        mesh: Option<MeshData>,
+        mesh: Option<std::sync::Arc<MeshData>>,
         camera: OrbitCamera,
     },
 }
@@ -109,6 +109,12 @@ pub struct LookApp {
     pub shortcuts_open: bool,
     pub volume: f32,
     pub muted: bool,
+    /// Video playback rate (0.5 / 1.0 / 1.5 / 2.0).
+    pub playback_rate: f32,
+    /// wgpu mesh PaintCallback path is initialized.
+    pub gpu_mesh: bool,
+    /// Upload current model mesh to GPU on next draw.
+    pub mesh_upload_pending: bool,
     pub drag_hover: bool,
     pub play_flash_until: Option<Instant>,
     pub first_run_hint_shown: bool,
@@ -181,6 +187,9 @@ impl LookApp {
             shortcuts_open: false,
             volume: 1.0,
             muted: false,
+            playback_rate: 1.0,
+            gpu_mesh: false,
+            mesh_upload_pending: false,
             drag_hover: false,
             play_flash_until: None,
             first_run_hint_shown: false,
@@ -268,8 +277,24 @@ impl LookApp {
         }
     }
 
+    pub fn push_volume(&self) {
+        self.video_engine.set_volume(self.effective_volume());
+    }
+
+    pub fn cycle_playback_rate(&mut self) {
+        self.playback_rate = match self.playback_rate {
+            r if (r - 0.5).abs() < 0.01 => 1.0,
+            r if (r - 1.0).abs() < 0.01 => 1.5,
+            r if (r - 1.5).abs() < 0.01 => 2.0,
+            _ => 0.5,
+        };
+        self.video_engine.set_rate(self.playback_rate);
+        self.touch();
+    }
+
     pub fn toggle_mute(&mut self) {
         self.muted = !self.muted;
+        self.push_volume();
         self.touch();
     }
 
@@ -329,6 +354,8 @@ impl LookApp {
             });
             self.video_engine
                 .open(path.clone(), self.settings.prefer_hw_decode);
+            self.push_volume();
+            self.video_engine.set_rate(self.playback_rate);
             let subtitles = crate::subtitles::Subtitles::load_sidecar(&path).unwrap_or_default();
             self.media = Some(LoadedMedia::Video {
                 info,
@@ -454,6 +481,7 @@ impl LookApp {
                     width: _,
                     height: _,
                     first_frame,
+                    has_audio: _,
                 } => {
                     if let Some(LoadedMedia::Video {
                         info: slot,
@@ -549,6 +577,7 @@ impl LookApp {
                     mesh,
                     camera,
                 });
+                self.mesh_upload_pending = true;
                 self.viewer_mode = ViewerMode::Viewer;
                 self.clear_held_frame();
             }

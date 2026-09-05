@@ -29,6 +29,8 @@ pub struct VideoPlayer {
     playing: bool,
     last_tick: Instant,
     fps: f32,
+    /// Playback rate multiplier (0.25–2.0). Affects frame advance timing.
+    rate: f32,
 }
 
 impl VideoPlayer {
@@ -47,6 +49,7 @@ impl VideoPlayer {
                 playing: false,
                 last_tick: Instant::now(),
                 fps,
+                rate: 1.0,
             })
         }
         #[cfg(not(windows))]
@@ -54,6 +57,14 @@ impl VideoPlayer {
             let _ = (path, prefer_hw_decode);
             Err(PlayerError::UnsupportedPlatform)
         }
+    }
+
+    pub fn set_rate(&mut self, rate: f32) {
+        self.rate = rate.clamp(0.25, 2.0);
+    }
+
+    pub fn rate(&self) -> f32 {
+        self.rate
     }
 
     pub fn path(&self) -> &Path {
@@ -157,7 +168,7 @@ impl VideoPlayer {
         {
             if self.playing {
                 let elapsed = self.last_tick.elapsed().as_secs_f32();
-                let frame_dt = 1.0 / self.fps;
+                let frame_dt = (1.0 / self.fps) / self.rate.max(0.25);
                 if elapsed >= frame_dt {
                     self.last_tick = Instant::now();
                     if self.inner.next_frame().is_none() {

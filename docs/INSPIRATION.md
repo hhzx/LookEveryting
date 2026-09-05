@@ -21,8 +21,9 @@
 | 视频 seek / ±5s / 进度气泡 / 失败外抛 | 已有 |
 | 3D 轨道相机、HUD、渐变背景、重置 | 已有 |
 | 主题 Dark/Light/System、批量重命名、便携 zip | 已有 |
-| wgpu mesh / WASAPI 音频 / ASS·多音轨 / PBR 贴图 | 路线图 v0.6–v0.7 |
-| SRT 字幕 + 硬解偏好开关 | ✅ 已落地（完整 DXVA 仍待） |
+| wgpu mesh / WASAPI 音频 / 倍速 | ✅ 已落地（完整 DXVA / PBR / ASS 仍待） |
+| ASS·多音轨 / PBR 贴图 / RAW | 路线图 v0.7 |
+| SRT 字幕 + 硬解偏好开关 | ✅ 已落地 |
 
 ## 版本
 

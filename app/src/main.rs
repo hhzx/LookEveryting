@@ -1,4 +1,5 @@
 mod app;
+mod audio_out;
 mod image_viewport;
 mod loader;
 mod subtitles;
@@ -55,6 +56,13 @@ impl LookEverytingApp {
             theme: Theme::dark(),
             applied: (ThemePreference::Dark, true),
         };
+        if let Some(rs) = cc.wgpu_render_state.as_ref() {
+            let mut renderer = rs.renderer.write();
+            renderer.callback_resources.insert(
+                cap_viewer::MeshRenderResources::create(&rs.device, rs.target_format),
+            );
+            app.inner.gpu_mesh = true;
+        }
         let pref = app.inner.settings.theme;
         let resolved = resolve_dark(pref, system_dark);
         app.theme = Theme::from_preference(pref, system_dark);

@@ -3,8 +3,10 @@
 use std::path::PathBuf;
 use std::thread::{self, JoinHandle};
 
-use cap_video::{VideoFrame, VideoInfo, VideoPlayer};
-use crossbeam_channel::{Receiver, Sender, TryRecvError, unbounded};
+use cap_video::{AudioDecoder, VideoFrame, VideoInfo, VideoPlayer};
+use crossbeam_channel::{unbounded, Receiver, Sender, TryRecvError};
+
+use crate::audio_out::AudioOut;
 
 pub enum VideoCommand {
     Open {
@@ -19,6 +21,8 @@ pub enum VideoCommand {
     StepBackward,
     Seek(f32),
     SeekRelative(f32),
+    SetVolume(f32),
+    SetRate(f32),
     Shutdown,
 }
 
@@ -29,6 +33,7 @@ pub enum VideoEvent {
         width: u32,
         height: u32,
         first_frame: Option<VideoFrame>,
+        has_audio: bool,
     },
     Frame(VideoFrame),
     Position {
@@ -101,6 +106,14 @@ impl VideoThread {
         let _ = self.cmd_tx.send(VideoCommand::SeekRelative(delta_secs));
     }
 
+    pub fn set_volume(&self, volume: f32) {
+        let _ = self.cmd_tx.send(VideoCommand::SetVolume(volume));
+    }
+
+    pub fn set_rate(&self, rate: f32) {
+        let _ = self.cmd_tx.send(VideoCommand::SetRate(rate));
+    }
+
     pub fn poll(&self) -> Vec<VideoEvent> {
         let mut out = Vec::new();
         loop {
@@ -126,8 +139,41 @@ fn emit_position(evt_tx: &Sender<VideoEvent>, player: &VideoPlayer) {
     });
 }
 
+fn sync_audio(
+    audio: &mut Option<AudioDecoder>,
+    out: &Option<AudioOut>,
+    position_secs: f32,
+    playing: bool,
+) {
+    let Some(decoder) = audio.as_mut() else {
+        return;
+    };
+    let Some(out) = out.as_ref() else {
+        return;
+    };
+    out.shared.set_playing(playing);
+    if !playing {
+        return;
+    }
+    // Keep ~200–350ms buffered ahead of the video clock.
+    if out.shared.queued_secs() > 0.35 {
+        return;
+    }
+    let until = position_secs + 0.35;
+    let mut chunks = Vec::new();
+    if decoder.pull_until(until, &mut chunks).is_ok() {
+        for chunk in chunks {
+            out.shared.push_samples(&chunk.samples);
+        }
+    }
+}
+
 fn video_loop(cmd_rx: Receiver<VideoCommand>, evt_tx: Sender<VideoEvent>) {
     let mut player: Option<VideoPlayer> = None;
+    let mut audio: Option<AudioDecoder> = None;
+    let mut audio_out: Option<AudioOut> = None;
+    let mut volume = 1.0_f32;
+    let mut rate = 1.0_f32;
 
     while let Ok(cmd) = cmd_rx.recv() {
         match cmd {
@@ -136,9 +182,16 @@ fn video_loop(cmd_rx: Receiver<VideoCommand>, evt_tx: Sender<VideoEvent>) {
                 prefer_hw_decode,
             } => {
                 player = None;
+                audio = None;
+                if let Some(out) = audio_out.take() {
+                    out.shared.set_playing(false);
+                    out.shared.clear();
+                }
                 match VideoInfo::from_path(&path) {
-                    Ok(mut info) => match VideoPlayer::open_with_options(path, prefer_hw_decode) {
-                        Ok(p) => {
+                    Ok(mut info) => match VideoPlayer::open_with_options(path.clone(), prefer_hw_decode)
+                    {
+                        Ok(mut p) => {
+                            p.set_rate(rate);
                             let duration_secs = p.duration_secs();
                             let width = p.width();
                             let height = p.height();
@@ -146,12 +199,26 @@ fn video_loop(cmd_rx: Receiver<VideoCommand>, evt_tx: Sender<VideoEvent>) {
                             info.width = width;
                             info.height = height;
                             let first_frame = p.current_frame().cloned();
+
+                            let mut has_audio = false;
+                            if let Ok(decoder) = AudioDecoder::open(&path) {
+                                if let Some(fmt) = decoder.format() {
+                                    has_audio = true;
+                                    audio_out = AudioOut::try_start(fmt.sample_rate, fmt.channels);
+                                    if let Some(out) = audio_out.as_ref() {
+                                        out.shared.set_volume(volume);
+                                    }
+                                    audio = Some(decoder);
+                                }
+                            }
+
                             let _ = evt_tx.send(VideoEvent::Opened {
                                 info,
                                 duration_secs,
                                 width,
                                 height,
                                 first_frame,
+                                has_audio,
                             });
                             emit_position(&evt_tx, &p);
                             player = Some(p);
@@ -168,26 +235,41 @@ fn video_loop(cmd_rx: Receiver<VideoCommand>, evt_tx: Sender<VideoEvent>) {
             VideoCommand::Play => {
                 if let Some(p) = player.as_mut() {
                     p.play();
+                    sync_audio(&mut audio, &audio_out, p.position_secs(), true);
                     let _ = evt_tx.send(VideoEvent::Playing(true));
                 }
             }
             VideoCommand::Pause => {
                 if let Some(p) = player.as_mut() {
                     p.pause();
+                    if let Some(out) = audio_out.as_ref() {
+                        out.shared.set_playing(false);
+                    }
                     let _ = evt_tx.send(VideoEvent::Playing(false));
                 }
             }
             VideoCommand::Toggle => {
                 if let Some(p) = player.as_mut() {
                     p.toggle();
-                    let _ = evt_tx.send(VideoEvent::Playing(p.is_playing()));
+                    let playing = p.is_playing();
+                    if playing {
+                        sync_audio(&mut audio, &audio_out, p.position_secs(), true);
+                    } else if let Some(out) = audio_out.as_ref() {
+                        out.shared.set_playing(false);
+                    }
+                    let _ = evt_tx.send(VideoEvent::Playing(playing));
                 }
             }
             VideoCommand::Tick => {
                 if let Some(p) = player.as_mut() {
+                    let playing = p.is_playing();
                     if let Some(frame) = p.tick() {
                         let _ = evt_tx.send(VideoEvent::Frame(frame));
                         emit_position(&evt_tx, p);
+                    }
+                    sync_audio(&mut audio, &audio_out, p.position_secs(), playing);
+                    if !playing {
+                        let _ = evt_tx.send(VideoEvent::Playing(false));
                     }
                 }
             }
@@ -196,6 +278,12 @@ fn video_loop(cmd_rx: Receiver<VideoCommand>, evt_tx: Sender<VideoEvent>) {
                     if let Some(frame) = p.step_frame(true) {
                         let _ = evt_tx.send(VideoEvent::Frame(frame));
                         emit_position(&evt_tx, p);
+                    }
+                    if let Some(out) = audio_out.as_ref() {
+                        out.shared.set_playing(false);
+                    }
+                    if let Some(a) = audio.as_mut() {
+                        let _ = a.seek_secs(p.position_secs());
                     }
                     let _ = evt_tx.send(VideoEvent::Playing(false));
                 }
@@ -206,6 +294,12 @@ fn video_loop(cmd_rx: Receiver<VideoCommand>, evt_tx: Sender<VideoEvent>) {
                         let _ = evt_tx.send(VideoEvent::Frame(frame));
                         emit_position(&evt_tx, p);
                     }
+                    if let Some(out) = audio_out.as_ref() {
+                        out.shared.set_playing(false);
+                    }
+                    if let Some(a) = audio.as_mut() {
+                        let _ = a.seek_secs(p.position_secs());
+                    }
                     let _ = evt_tx.send(VideoEvent::Playing(false));
                 }
             }
@@ -214,6 +308,13 @@ fn video_loop(cmd_rx: Receiver<VideoCommand>, evt_tx: Sender<VideoEvent>) {
                     if let Some(frame) = p.seek_fraction(fraction) {
                         let _ = evt_tx.send(VideoEvent::Frame(frame));
                         emit_position(&evt_tx, p);
+                    }
+                    if let Some(out) = audio_out.as_ref() {
+                        out.shared.set_playing(false);
+                        out.shared.clear();
+                    }
+                    if let Some(a) = audio.as_mut() {
+                        let _ = a.seek_secs(p.position_secs());
                     }
                     let _ = evt_tx.send(VideoEvent::Playing(false));
                 }
@@ -224,7 +325,26 @@ fn video_loop(cmd_rx: Receiver<VideoCommand>, evt_tx: Sender<VideoEvent>) {
                         let _ = evt_tx.send(VideoEvent::Frame(frame));
                         emit_position(&evt_tx, p);
                     }
+                    if let Some(out) = audio_out.as_ref() {
+                        out.shared.set_playing(false);
+                        out.shared.clear();
+                    }
+                    if let Some(a) = audio.as_mut() {
+                        let _ = a.seek_secs(p.position_secs());
+                    }
                     let _ = evt_tx.send(VideoEvent::Playing(false));
+                }
+            }
+            VideoCommand::SetVolume(v) => {
+                volume = v.clamp(0.0, 1.0);
+                if let Some(out) = audio_out.as_ref() {
+                    out.shared.set_volume(volume);
+                }
+            }
+            VideoCommand::SetRate(r) => {
+                rate = r.clamp(0.25, 2.0);
+                if let Some(p) = player.as_mut() {
+                    p.set_rate(rate);
                 }
             }
             VideoCommand::Shutdown => break,

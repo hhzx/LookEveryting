@@ -49,7 +49,7 @@ pub enum LoadedPayload {
     },
     Model {
         info: ModelInfo,
-        mesh: Option<MeshData>,
+        mesh: Option<std::sync::Arc<MeshData>>,
         camera: OrbitCamera,
     },
 }
@@ -258,7 +258,7 @@ fn load_media_sync(path: &Path) -> Result<LoadedPayload, String> {
         Some(MediaKind::Video) => Err("video uses UI thread".into()),
         Some(MediaKind::Model) => {
             let info = ModelInfo::from_path(path).map_err(|e| e.to_string())?;
-            let mesh = load_mesh(path).ok();
+            let mesh = load_mesh(path).ok().map(std::sync::Arc::new);
             let camera = mesh
                 .as_ref()
                 .map(|m| OrbitCamera::fit_bounds(&m.bounds))

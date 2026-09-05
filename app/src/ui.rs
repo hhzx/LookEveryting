@@ -8,7 +8,7 @@ use cap_ui::colors::{Palette, Semantic};
 use cap_ui::layout::LayoutMode;
 use cap_ui::spacing::{component, space};
 use cap_ui::widgets::{ghost_button, icon_button, paint_floating_panel, panel_frame, titlebar_frame};
-use cap_viewer::{draw_mesh_viewport, ViewportBg};
+use cap_viewer::{draw_mesh_viewport_ex, MeshDrawOpts, ViewportBg};
 use egui::{pos2, vec2, Align2, Color32, Frame, RichText, Sense, Ui, Vec2};
 
 use crate::app::{ErrorAction, LoadedMedia, LookApp};
@@ -385,7 +385,25 @@ fn viewport(app: &mut LookApp, ui: &mut Ui) {
                 } else {
                     mesh.indices.len() / 3
                 };
-                draw_mesh_viewport(ui, rect, mesh, camera, *wireframe, *bg);
+                let upload = if app.mesh_upload_pending {
+                    app.mesh_upload_pending = false;
+                    Some(std::sync::Arc::clone(mesh))
+                } else {
+                    None
+                };
+                draw_mesh_viewport_ex(
+                    ui,
+                    rect,
+                    mesh,
+                    camera,
+                    *wireframe,
+                    *bg,
+                    MeshDrawOpts {
+                        gpu_available: app.gpu_mesh,
+                        mesh_to_upload: upload,
+                        clear_gpu_mesh: false,
+                    },
+                );
                 let hud = format!(
                     "{} · {}",
                     app.i18n
@@ -855,11 +873,23 @@ fn floating_toolbar(app: &mut LookApp, ui: &mut Ui, viewport_size: Vec2) {
                     {
                         app.toggle_mute();
                     }
+                    let vol_before = app.volume;
                     ui.add(
                         egui::Slider::new(&mut app.volume, 0.0..=1.0)
                             .show_value(false)
                             .text(app.i18n.t("volume")),
                     );
+                    if (app.volume - vol_before).abs() > f32::EPSILON {
+                        app.push_volume();
+                    }
+                    let rate_label = format!("{:.2}x", app.playback_rate);
+                    if ui
+                        .add(egui::Button::new(rate_label).min_size(vec2(48.0, 28.0)))
+                        .on_hover_text(app.i18n.t("video-rate-cycle"))
+                        .clicked()
+                    {
+                        app.cycle_playback_rate();
+                    }
                 }
             Some(LoadedMedia::Model { .. }) => {
                 if icon_button(ui, "3D", app.i18n.t("model-solid")).clicked() {
@@ -1137,6 +1167,16 @@ fn handle_shortcuts(app: &mut LookApp, ctx: &egui::Context) {
         if i.key_pressed(egui::Key::End) && !app.folder_files.is_empty() {
             app.navigate_to_index(app.folder_files.len() - 1);
         }
+        if is_video && i.key_pressed(egui::Key::OpenBracket) {
+            app.playback_rate = (app.playback_rate - 0.25).max(0.5);
+            app.video_engine.set_rate(app.playback_rate);
+            app.touch();
+        }
+        if is_video && i.key_pressed(egui::Key::CloseBracket) {
+            app.playback_rate = (app.playback_rate + 0.25).min(2.0);
+            app.video_engine.set_rate(app.playback_rate);
+            app.touch();
+        }
         if is_video && i.key_pressed(egui::Key::V) {
             app.settings.show_subtitles = !app.settings.show_subtitles;
             let _ = cap_core::save_settings(&app.settings);
@@ -1264,6 +1304,7 @@ fn shortcuts_panel(app: &mut LookApp, ui: &mut Ui) {
     let rows = [
         ("← → ↑ ↓", "Navigate files (video ←→ = ±5s)"),
         ("Shift+← →", "Frame step (video)"),
+        ("[ ]", "Playback speed"),
         ("Space", "Slideshow / Play-Pause"),
         ("V", "Toggle subtitles (.srt)"),
         ("M", "Mute (video)"),

@@ -1,5 +1,6 @@
 //! Video file metadata and in-app playback.
 
+mod audio;
 mod mf_runtime;
 mod player;
 mod yuv;
@@ -9,6 +10,7 @@ use std::path::Path;
 use cap_core::MediaKind;
 use thiserror::Error;
 
+pub use audio::{AudioChunk, AudioDecoder, AudioError, AudioFormat};
 pub use player::{PlayerError, VideoFrame, VideoPlayer};
 
 #[derive(Debug, Error)]
