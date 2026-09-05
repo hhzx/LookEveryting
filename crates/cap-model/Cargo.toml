@@ -11,6 +11,8 @@ gltf = "1.4"
 stl_io = "0.7"
 tobj = "4"
 ufbx = "0.9"
+zip = "2"
+roxmltree = "0.20"
 thiserror = "2"
 
 [dev-dependencies]

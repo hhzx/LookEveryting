@@ -27,6 +27,7 @@
 | stl | 常见切片网格 |
 | obj | tobj 加载 |
 | gltf / glb | glTF（albedo + metallic/roughness + normal map） |
+| 3mf | 3MF（ZIP/XML 网格预览） |
 | fbx | ufbx |
 
 轨道相机、线框/实体、渐变背景、HUD。实体着色走 **wgpu PaintCallback**（albedo + normal + metallic/roughness + 解析 IBL）；filmstrip 有 CPU 软光栅缩略图。

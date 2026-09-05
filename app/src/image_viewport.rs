@@ -172,8 +172,8 @@ pub fn interact_image_viewport(app: &mut LookApp, ui: &mut Ui, rect: Rect, img_s
     if active {
         ui.ctx().request_repaint();
         let (raw, smooth) = ui.input(|i| (i.raw_scroll_delta.y, i.smooth_scroll_delta.y));
-        // egui: positive Y = scroll up; apps expect that to zoom in → invert legacy sign.
-        let scroll = -(raw * 1.15 + smooth * 0.5);
+        // Wheel up (positive egui Y) → zoom in. Do not invert.
+        let scroll = raw * 1.15 + smooth * 0.5;
         if scroll.abs() > f32::EPSILON {
             let factor = (1.0 + scroll * 0.0028).clamp(0.90, 1.10);
             let pointer = ui

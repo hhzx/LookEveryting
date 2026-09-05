@@ -255,30 +255,31 @@ fn load_prefetch_job(path: PathBuf, tx: &Sender<LoadMessage>) {
 
 fn thumb_loop(jobs: Receiver<ThumbJob>, out: Sender<LoadMessage>) {
     while let Ok(ThumbJob::Decode(path)) = jobs.recv() {
-        let decoded = match classify_extension(&path) {
-            Some(MediaKind::Image) => {
-                cap_image::decode_thumbnail(&path, 192).ok()
-            }
-            Some(MediaKind::Video) => cap_video::decode_thumbnail(&path, 192).map(|frame| {
-                DecodedImage {
-                    width: frame.width,
-                    height: frame.height,
-                    rgba: frame.rgba,
-                    native_width: frame.width,
-                    native_height: frame.height,
+        let decoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            match classify_extension(&path) {
+                Some(MediaKind::Image) => cap_image::decode_thumbnail(&path, 192).ok(),
+                Some(MediaKind::Video) => {
+                    cap_video::decode_thumbnail(&path, 192).map(|frame| DecodedImage {
+                        width: frame.width,
+                        height: frame.height,
+                        rgba: frame.rgba,
+                        native_width: frame.width,
+                        native_height: frame.height,
+                    })
                 }
-            }),
-            Some(MediaKind::Model) => load_mesh(&path).ok().and_then(|mesh| {
-                cap_viewer::render_mesh_thumbnail(&mesh, 192).map(|rgba| DecodedImage {
-                    width: 192,
-                    height: 192,
-                    rgba,
-                    native_width: 192,
-                    native_height: 192,
-                })
-            }),
-            _ => None,
-        };
+                Some(MediaKind::Model) => load_mesh(&path).ok().and_then(|mesh| {
+                    cap_viewer::render_mesh_thumbnail(&mesh, 192).map(|rgba| DecodedImage {
+                        width: 192,
+                        height: 192,
+                        rgba,
+                        native_width: 192,
+                        native_height: 192,
+                    })
+                }),
+                _ => None,
+            }
+        }))
+        .unwrap_or(None);
         let _ = out.send(LoadMessage::Thumbnail { path, decoded });
     }
 }
@@ -287,17 +288,23 @@ fn load_media_sync(path: &Path) -> Result<LoadedPayload, String> {
     match classify_extension(path) {
         Some(MediaKind::Video) => Err("video uses UI thread".into()),
         Some(MediaKind::Model) => {
-            let info = ModelInfo::from_path(path).map_err(|e| e.to_string())?;
-            let mesh = load_mesh(path).ok().map(std::sync::Arc::new);
-            let camera = mesh
-                .as_ref()
-                .map(|m| OrbitCamera::fit_bounds(&m.bounds))
-                .unwrap_or_default();
-            Ok(LoadedPayload::Model {
-                info,
-                mesh,
-                camera,
-            })
+            let loaded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let info = ModelInfo::from_path(path).map_err(|e| e.to_string())?;
+                let mesh = load_mesh(path).ok().map(std::sync::Arc::new);
+                let camera = mesh
+                    .as_ref()
+                    .map(|m| OrbitCamera::fit_bounds(&m.bounds))
+                    .unwrap_or_default();
+                Ok::<_, String>(LoadedPayload::Model {
+                    info,
+                    mesh,
+                    camera,
+                })
+            }));
+            match loaded {
+                Ok(inner) => inner,
+                Err(_) => Err("model loader panicked".into()),
+            }
         }
         _ => Err("unsupported file format".into()),
     }

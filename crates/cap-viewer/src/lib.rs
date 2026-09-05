@@ -156,8 +156,8 @@ pub fn draw_mesh_viewport_ex(
         }
     }
     if response.hovered() {
-        // Invert: scroll up �?zoom in (closer).
-        let scroll = -ui.input(|i| i.smooth_scroll_delta.y + i.raw_scroll_delta.y);
+        // Wheel up -> zoom in (closer / smaller distance).
+        let scroll = ui.input(|i| i.smooth_scroll_delta.y + i.raw_scroll_delta.y);
         if scroll != 0.0 {
             camera.zoom((1.0 - scroll * 0.002).clamp(0.85, 1.15));
         }

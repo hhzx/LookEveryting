@@ -161,14 +161,15 @@ pub fn load_mesh(path: &Path) -> Result<MeshData, ModelError> {
         "stl" => load_stl(path)?,
         "glb" | "gltf" => load_gltf(path)?,
         "fbx" => load_fbx(path)?,
+        "3mf" => load_3mf(path)?,
         "max" => {
             return Err(ModelError::Message(
                 "3ds Max (.max) is proprietary. Export to FBX, OBJ, or GLTF.".to_string(),
             ))
         }
-        "ply" | "dae" | "3mf" => {
+        "ply" | "dae" => {
             return Err(ModelError::Message(format!(
-                "{} preview is not implemented yet. Export to OBJ, STL, GLTF, or FBX.",
+                "{} preview is not implemented yet. Export to OBJ, STL, GLTF, FBX, or 3MF.",
                 ext.to_ascii_uppercase()
             )));
         }
@@ -423,28 +424,53 @@ fn append_ufbx_mesh(
     indices: &mut Vec<u32>,
     uvs: &mut Vec<[f32; 2]>,
 ) {
-    let _base = vertices.len() as u32;
-    let use_stream = mesh.vertex_position.exists;
+    const MAX_VERTS: usize = 400_000;
+    if vertices.len() >= MAX_VERTS {
+        return;
+    }
 
+    let use_stream = mesh.vertex_position.exists;
     if use_stream {
-        // Expand face corners → unique triangle verts (handles non-unique UVs).
+        let pos_len = mesh.vertex_position.indices.as_ref().len();
+        let uv_ok = mesh.vertex_uv.exists;
         for face in mesh.faces.as_ref() {
             if face.num_indices < 3 {
                 continue;
             }
             let begin = face.index_begin as usize;
+            let last = begin + face.num_indices as usize;
+            if last > pos_len {
+                continue;
+            }
             let i0 = begin;
             for t in 1..(face.num_indices as usize - 1) {
+                if vertices.len() + 3 > MAX_VERTS {
+                    return;
+                }
                 let corners = [i0, begin + t, begin + t + 1];
                 for &corner in &corners {
-                    let mut p = mesh.vertex_position[corner];
+                    let idx = mesh.vertex_position.indices.as_ref()[corner] as usize;
+                    let Some(mut p) = mesh.vertex_position.values.as_ref().get(idx).copied() else {
+                        continue;
+                    };
                     if let Some(m) = xform {
                         p = ufbx::transform_position(m, p);
                     }
                     vertices.push([p.x as f32, p.y as f32, p.z as f32]);
-                    let uv = if mesh.vertex_uv.exists {
-                        let u = mesh.vertex_uv[corner];
-                        [u.x as f32, u.y as f32]
+                    let uv = if uv_ok {
+                        let uvidx = mesh
+                            .vertex_uv
+                            .indices
+                            .as_ref()
+                            .get(corner)
+                            .copied()
+                            .unwrap_or(0) as usize;
+                        mesh.vertex_uv
+                            .values
+                            .as_ref()
+                            .get(uvidx)
+                            .map(|u| [u.x as f32, u.y as f32])
+                            .unwrap_or([0.0, 0.0])
                     } else {
                         [0.0, 0.0]
                     };
@@ -456,9 +482,12 @@ fn append_ufbx_mesh(
         return;
     }
 
-    // Fallback: unique positions + vertex_indices fan.
     let local_base = vertices.len() as u32;
-    for v in mesh.vertices.as_ref() {
+    let src_verts = mesh.vertices.as_ref();
+    if vertices.len() + src_verts.len() > MAX_VERTS {
+        return;
+    }
+    for v in src_verts {
         let mut p = *v;
         if let Some(m) = xform {
             p = ufbx::transform_position(m, p);
@@ -466,17 +495,154 @@ fn append_ufbx_mesh(
         vertices.push([p.x as f32, p.y as f32, p.z as f32]);
         uvs.push([0.0, 0.0]);
     }
+    let vidx = mesh.vertex_indices.as_ref();
     for face in mesh.faces.as_ref() {
         if face.num_indices < 3 {
             continue;
         }
-        let a = mesh.vertex_indices[face.index_begin as usize] + local_base;
+        let begin = face.index_begin as usize;
+        let end = begin + face.num_indices as usize;
+        if end > vidx.len() {
+            continue;
+        }
+        let a = vidx[begin] + local_base;
         for i in 1..(face.num_indices as usize - 1) {
-            let b = mesh.vertex_indices[face.index_begin as usize + i] + local_base;
-            let c = mesh.vertex_indices[face.index_begin as usize + i + 1] + local_base;
+            let b = vidx[begin + i] + local_base;
+            let c = vidx[begin + i + 1] + local_base;
             indices.extend_from_slice(&[a, b, c]);
         }
     }
+}
+
+fn load_3mf(path: &Path) -> Result<MeshData, ModelError> {
+    let file = std::fs::File::open(path)?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| ModelError::Message(format!("3MF zip: {e}")))?;
+
+    // Prefer standard model path; otherwise first *.model entry.
+    let mut model_names: Vec<String> = Vec::new();
+    for i in 0..archive.len() {
+        let Ok(entry) = archive.by_index(i) else {
+            continue;
+        };
+        let name = entry.name().replace('\\', "/");
+        if name.to_ascii_lowercase().ends_with(".model") {
+            model_names.push(name);
+        }
+    }
+    if model_names.is_empty() {
+        return Err(ModelError::Message(
+            "3MF package has no .model document.".to_string(),
+        ));
+    }
+    model_names.sort_by_key(|n| {
+        let lower = n.to_ascii_lowercase();
+        if lower.contains("3dmodel.model") {
+            0
+        } else if lower.starts_with("3d/") {
+            1
+        } else {
+            2
+        }
+    });
+
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    let mut mesh_count = 0usize;
+
+    for name in model_names {
+        let mut entry = archive
+            .by_name(&name)
+            .map_err(|e| ModelError::Message(format!("3MF entry {name}: {e}")))?;
+        let mut xml = String::new();
+        std::io::Read::read_to_string(&mut entry, &mut xml)
+            .map_err(|e| ModelError::Message(format!("3MF read: {e}")))?;
+        let (v, i, meshes) = parse_3mf_model_xml(&xml)?;
+        let base = vertices.len() as u32;
+        vertices.extend(v);
+        indices.extend(i.into_iter().map(|x| x + base));
+        mesh_count += meshes;
+        if vertices.len() > 400_000 {
+            break;
+        }
+    }
+
+    if vertices.is_empty() {
+        return Err(ModelError::Message(
+            "No triangle mesh found in 3MF file.".to_string(),
+        ));
+    }
+
+    // 3MF is often Z-up; convert to Y-up like STL.
+    for v in &mut vertices {
+        let (x, y, z) = (v[0], v[1], v[2]);
+        *v = [x, z, -y];
+    }
+
+    Ok(MeshData {
+        vertices,
+        indices,
+        bounds: Bounds::default(),
+        mesh_count: mesh_count.max(1),
+        ..Default::default()
+    })
+}
+
+fn parse_3mf_model_xml(xml: &str) -> Result<(Vec<[f32; 3]>, Vec<u32>, usize), ModelError> {
+    let doc = roxmltree::Document::parse(xml)
+        .map_err(|e| ModelError::Message(format!("3MF XML: {e}")))?;
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    let mut mesh_count = 0usize;
+
+    for mesh in doc.descendants().filter(|n| n.tag_name().name() == "mesh") {
+        let local_base = vertices.len() as u32;
+        let mut local_count = 0u32;
+        if let Some(verts) = mesh.children().find(|n| n.tag_name().name() == "vertices") {
+            for v in verts.children().filter(|n| n.tag_name().name() == "vertex") {
+                let x = attr_f32(v, "x").unwrap_or(0.0);
+                let y = attr_f32(v, "y").unwrap_or(0.0);
+                let z = attr_f32(v, "z").unwrap_or(0.0);
+                vertices.push([x, y, z]);
+                local_count += 1;
+            }
+        }
+        if local_count == 0 {
+            continue;
+        }
+        let mut tris = 0usize;
+        if let Some(tris_node) = mesh.children().find(|n| n.tag_name().name() == "triangles") {
+            for t in tris_node.children().filter(|n| n.tag_name().name() == "triangle") {
+                let Some(a) = attr_u32(t, "v1") else {
+                    continue;
+                };
+                let Some(b) = attr_u32(t, "v2") else {
+                    continue;
+                };
+                let Some(c) = attr_u32(t, "v3") else {
+                    continue;
+                };
+                if a >= local_count || b >= local_count || c >= local_count {
+                    continue;
+                }
+                indices.extend_from_slice(&[local_base + a, local_base + b, local_base + c]);
+                tris += 1;
+            }
+        }
+        if tris > 0 {
+            mesh_count += 1;
+        }
+    }
+
+    Ok((vertices, indices, mesh_count))
+}
+
+fn attr_f32(node: roxmltree::Node<'_, '_>, name: &str) -> Option<f32> {
+    node.attribute(name)?.parse().ok()
+}
+
+fn attr_u32(node: roxmltree::Node<'_, '_>, name: &str) -> Option<u32> {
+    node.attribute(name)?.parse().ok()
 }
 
 #[cfg(test)]
@@ -494,5 +660,42 @@ mod tests {
         .unwrap();
         let mesh = load_mesh(&path).unwrap();
         assert_eq!(mesh.vertices.len(), 3);
+    }
+
+    #[test]
+    fn loads_minimal_3mf() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("box.3mf");
+        let xml = r#"<?xml version="1.0"?>
+<model unit="millimeter"
+ xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+ <resources>
+  <object id="1" type="model">
+   <mesh>
+    <vertices>
+     <vertex x="0" y="0" z="0"/>
+     <vertex x="1" y="0" z="0"/>
+     <vertex x="0" y="1" z="0"/>
+    </vertices>
+    <triangles>
+     <triangle v1="0" v2="1" v3="2"/>
+    </triangles>
+   </mesh>
+  </object>
+ </resources>
+ <build><item objectid="1"/></build>
+</model>"#;
+        {
+            let file = std::fs::File::create(&path).unwrap();
+            let mut zip = zip::ZipWriter::new(file);
+            let opts = zip::write::SimpleFileOptions::default();
+            zip.start_file("3D/3dmodel.model", opts).unwrap();
+            use std::io::Write;
+            zip.write_all(xml.as_bytes()).unwrap();
+            zip.finish().unwrap();
+        }
+        let mesh = load_mesh(&path).unwrap();
+        assert_eq!(mesh.vertices.len(), 3);
+        assert_eq!(mesh.triangle_count(), 1);
     }
 }
