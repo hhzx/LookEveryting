@@ -212,6 +212,11 @@ pub struct AnimFrame {
     pub delay_ms: u32,
 }
 
+/// Max edge length for animated GIF playback buffers.
+pub const GIF_MAX_EDGE: u32 = 1280;
+/// Soft cap on decoded animation frames (very long GIFs keep first N).
+pub const GIF_MAX_FRAMES: usize = 400;
+
 /// Decode GIF animation frames. Returns empty if not a multi-frame GIF.
 pub fn decode_gif_animation(path: &Path) -> Result<Vec<AnimFrame>, ImageError> {
     let ext = path
@@ -223,30 +228,44 @@ pub fn decode_gif_animation(path: &Path) -> Result<Vec<AnimFrame>, ImageError> {
     }
     let file = File::open(path)?;
     let decoder = image::codecs::gif::GifDecoder::new(BufReader::new(file))?;
-    let mut frames = Vec::new();
     let (native_w, native_h) = decoder.dimensions();
+    let mut frames = Vec::new();
     for frame in decoder.into_frames() {
+        if frames.len() >= GIF_MAX_FRAMES {
+            break;
+        }
         let frame = frame?;
-        let delay = frame.delay().numer_denom_ms();
-        let delay_ms = if delay.1 == 0 {
-            100
+        // `numer_denom_ms` is already in milliseconds (numer/denom).
+        let (numer, denom) = frame.delay().numer_denom_ms();
+        let delay_ms = if numer == 0 {
+            100 // GIF "0" delay → browsers use ~100ms
         } else {
-            ((delay.0 as u64 * 1000) / delay.1 as u64).max(20) as u32
+            (numer / denom.max(1)).clamp(20, 10_000)
         };
         let rgba = frame.into_buffer();
         let (w, h) = rgba.dimensions();
-        frames.push(AnimFrame {
-            image: DecodedImage {
-                width: w,
-                height: h,
-                rgba: rgba.into_raw(),
-                native_width: native_w,
-                native_height: native_h,
-            },
-            delay_ms,
-        });
+        let mut image = DecodedImage {
+            width: w,
+            height: h,
+            rgba: rgba.into_raw(),
+            native_width: native_w,
+            native_height: native_h,
+        };
+        if image.width.max(image.height) > GIF_MAX_EDGE {
+            image = to_thumbnail(&image, GIF_MAX_EDGE);
+            image.native_width = native_w;
+            image.native_height = native_h;
+        }
+        frames.push(AnimFrame { image, delay_ms });
     }
     Ok(frames)
+}
+
+/// True when path looks like a GIF.
+pub fn is_gif_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("gif"))
 }
 
 /// Load image dimensions without full decode.

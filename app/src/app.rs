@@ -140,6 +140,8 @@ pub enum ErrorAction {
 /// In-memory GIF (or multi-frame) playback state.
 pub struct GifPlayback {
     pub frames: Vec<cap_image::AnimFrame>,
+    /// Lazily uploaded egui textures, parallel to `frames`.
+    pub textures: Vec<Option<TextureHandle>>,
     pub index: usize,
     pub last_tick: Instant,
 }
@@ -308,6 +310,7 @@ impl LookApp {
 
     /// Rotate current image 90° clockwise (in-memory pixel buffer).
     pub fn rotate_image_cw(&mut self) {
+        self.ensure_image_rgba_for_edit();
         let Some(LoadedMedia::Image {
             width,
             height,
@@ -315,11 +318,14 @@ impl LookApp {
             texture,
             native_width,
             native_height,
+            animation,
             ..
         }) = &mut self.media
         else {
             return;
         };
+        // Stop GIF playback when editing pixels.
+        *animation = None;
         let Some(src) = rgba.as_ref() else {
             return;
         };
@@ -343,16 +349,19 @@ impl LookApp {
     }
 
     pub fn flip_image(&mut self, horizontal: bool) {
+        self.ensure_image_rgba_for_edit();
         let Some(LoadedMedia::Image {
             width,
             height,
             rgba,
             texture,
+            animation,
             ..
         }) = &mut self.media
         else {
             return;
         };
+        *animation = None;
         let Some(src) = rgba.as_mut() else {
             return;
         };
@@ -380,6 +389,32 @@ impl LookApp {
         }
         *texture = None;
         self.touch();
+    }
+
+    /// Restore pixel buffer from the current GIF frame when rgba was dropped during playback.
+    fn ensure_image_rgba_for_edit(&mut self) {
+        let Some(LoadedMedia::Image {
+            rgba,
+            animation,
+            width,
+            height,
+            ..
+        }) = &mut self.media
+        else {
+            return;
+        };
+        if rgba.is_some() {
+            return;
+        }
+        let Some(anim) = animation.as_ref() else {
+            return;
+        };
+        let Some(frame) = anim.frames.get(anim.index) else {
+            return;
+        };
+        *width = frame.image.width;
+        *height = frame.image.height;
+        *rgba = Some(frame.image.rgba.clone());
     }
 
     pub fn flash_play_pause(&mut self) {
@@ -702,8 +737,10 @@ impl LookApp {
             crate::thumbnails::seed_from_decoded(&mut self.thumbnails, &path, &decoded);
         }
         let anim = if animation.len() > 1 {
+            let n = animation.len();
             Some(GifPlayback {
                 frames: animation,
+                textures: vec![None; n],
                 index: 0,
                 last_tick: Instant::now(),
             })
@@ -769,18 +806,43 @@ impl LookApp {
         if anim.frames.len() < 2 {
             return;
         }
-        let delay = Duration::from_millis(anim.frames[anim.index].delay_ms as u64);
+        let delay = Duration::from_millis(anim.frames[anim.index].delay_ms.max(20) as u64);
         if anim.last_tick.elapsed() < delay {
             ctx.request_repaint_after(delay.saturating_sub(anim.last_tick.elapsed()));
             return;
         }
+        // Catch up if we fell behind (avoid accumulating lag).
+        let steps = (anim.last_tick.elapsed().as_millis() / delay.as_millis().max(1)).max(1) as usize;
         anim.last_tick = Instant::now();
-        anim.index = (anim.index + 1) % anim.frames.len();
-        let frame = &anim.frames[anim.index];
+        anim.index = (anim.index + steps) % anim.frames.len();
+        let idx = anim.index;
+        let frame = &anim.frames[idx];
         *width = frame.image.width;
         *height = frame.image.height;
-        *rgba = Some(frame.image.rgba.clone());
-        *texture = None;
+
+        if anim.textures.get(idx).and_then(|t| t.as_ref()).is_none() {
+            let image = ColorImage::from_rgba_unmultiplied(
+                [frame.image.width as usize, frame.image.height as usize],
+                &frame.image.rgba,
+            );
+            let handle = ctx.load_texture(
+                format!("gif-{}-{idx}", self.current_index),
+                image,
+                egui::TextureOptions::LINEAR,
+            );
+            if let Some(slot) = anim.textures.get_mut(idx) {
+                *slot = Some(handle);
+            }
+        }
+        if let Some(Some(tex)) = anim.textures.get(idx) {
+            *texture = Some(tex.clone());
+            // Keep rgba for rotate/flip; update to current frame cheaply via Arc would be better,
+            // but clone only when missing — skip while animating.
+            *rgba = None;
+        } else {
+            *rgba = Some(frame.image.rgba.clone());
+            *texture = None;
+        }
         ctx.request_repaint();
     }
 

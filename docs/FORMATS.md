@@ -6,7 +6,7 @@
 |--------|------|
 | jpg / jpeg | 预览优先；大图上限 4096；按 `1` 加载原图 |
 | png | 透明棋盘格 |
-| gif | 多帧动画播放 |
+| gif | 多帧动画播放（合成帧、正确延时、纹理缓存） |
 | webp / bmp / tiff / ico | 静态解码 |
 | cr2 / cr3 / nef / arw / dng / orf / rw2 / raf / pef / srw | RAW 预览（粗 demosaic） |
 

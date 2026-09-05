@@ -177,7 +177,38 @@ fn media_worker_loop(jobs: Receiver<MediaJob>, tx: Sender<LoadMessage>) {
 
 fn load_media_job(path: PathBuf, generation: u64, tx: &Sender<LoadMessage>) {
     if classify_extension(&path) == Some(MediaKind::Image) {
-        let animation = decode_gif_animation(&path).unwrap_or_default();
+        // Animated GIF: decode frames once and use frame 0 as the still.
+        if cap_image::is_gif_path(&path) {
+            match decode_gif_animation(&path) {
+                Ok(animation) if animation.len() > 1 => {
+                    let first = animation[0].image.clone();
+                    let _ = tx.send(LoadMessage::Ready {
+                        path,
+                        generation,
+                        result: Ok(LoadedPayload::Image {
+                            decoded: first,
+                            animation,
+                        }),
+                    });
+                    return;
+                }
+                Ok(animation) if animation.len() == 1 => {
+                    let first = animation[0].image.clone();
+                    let _ = tx.send(LoadMessage::Ready {
+                        path,
+                        generation,
+                        result: Ok(LoadedPayload::Image {
+                            decoded: first,
+                            animation: Vec::new(),
+                        }),
+                    });
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        let animation = Vec::new();
         match decode_staged(&path, PREVIEW_EDGE, cap_image::MAX_VIEW_EDGE) {
             Ok((Some(preview), view)) => {
                 let _ = tx.send(LoadMessage::Preview {
