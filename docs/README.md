@@ -32,6 +32,10 @@ LookEveryting 项目文档索引。按用途分类如下。
 | 文档 | 说明 |
 |------|------|
 | [roadmap.md](./roadmap.md) | 版本规划与待办 |
+| [LEARNING_PLAN.md](./LEARNING_PLAN.md) | 开源竞品学习整合计划 |
+| [EXPERIENCE_PLAN.md](./EXPERIENCE_PLAN.md) | 极致体验专项 |
+| [FORMATS.md](./FORMATS.md) | 支持的文件格式 |
+| [INSPIRATION.md](./INSPIRATION.md) | 竞品摘要 |
 
 ## 文档维护约定
 

@@ -197,6 +197,16 @@ impl VideoPlayer {
         }
     }
 
+    /// Seek by a relative time delta in seconds (clamped to [0, duration]).
+    pub fn seek_by_secs(&mut self, delta: f32) -> Option<VideoFrame> {
+        let duration = self.duration_secs();
+        if duration <= 0.0 {
+            return None;
+        }
+        let target = (self.position_secs() + delta).clamp(0.0, duration);
+        self.seek_fraction(target / duration)
+    }
+
     /// Step one frame forward or backward (pauses playback).
     pub fn step_frame(&mut self, forward: bool) -> Option<VideoFrame> {
         #[cfg(windows)]

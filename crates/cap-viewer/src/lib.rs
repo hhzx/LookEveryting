@@ -49,6 +49,14 @@ impl OrbitCamera {
     }
 }
 
+/// Viewport background fill mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ViewportBg {
+    #[default]
+    Solid,
+    Gradient,
+}
+
 /// Draw a mesh inside `rect`, returning interaction response.
 pub fn draw_mesh_viewport(
     ui: &mut Ui,
@@ -56,11 +64,19 @@ pub fn draw_mesh_viewport(
     mesh: &MeshData,
     camera: &mut OrbitCamera,
     wireframe: bool,
+    bg: ViewportBg,
 ) -> Response {
     let response = ui.allocate_rect(rect, Sense::click_and_drag());
     let painter = ui.painter_at(rect);
 
-    painter.rect_filled(rect, 0.0, Semantic::BG_VIEWPORT);
+    match bg {
+        ViewportBg::Solid => {
+            painter.rect_filled(rect, 0.0, Semantic::BG_VIEWPORT);
+        }
+        ViewportBg::Gradient => {
+            draw_gradient_bg(&painter, rect);
+        }
+    }
 
     if mesh.vertices.is_empty() {
         painter.text(
@@ -110,6 +126,37 @@ pub fn draw_mesh_viewport(
 
     draw_axis_gizmo(&painter, rect);
     response
+}
+
+fn draw_gradient_bg(painter: &egui::Painter, rect: Rect) {
+    let top = Color32::from_rgb(0x2C, 0x2C, 0x34);
+    let bottom = Color32::from_rgb(0x10, 0x10, 0x14);
+    let mut mesh = egui::Mesh::default();
+    let i = mesh.vertices.len() as u32;
+    let uv = egui::pos2(0.5, 0.5);
+    mesh.vertices.push(egui::epaint::Vertex {
+        pos: rect.left_top(),
+        uv,
+        color: top,
+    });
+    mesh.vertices.push(egui::epaint::Vertex {
+        pos: rect.right_top(),
+        uv,
+        color: top,
+    });
+    mesh.vertices.push(egui::epaint::Vertex {
+        pos: rect.right_bottom(),
+        uv,
+        color: bottom,
+    });
+    mesh.vertices.push(egui::epaint::Vertex {
+        pos: rect.left_bottom(),
+        uv,
+        color: bottom,
+    });
+    mesh.add_triangle(i, i + 1, i + 2);
+    mesh.add_triangle(i, i + 2, i + 3);
+    painter.add(egui::Shape::mesh(mesh));
 }
 
 fn view_proj(camera: &OrbitCamera, rect: Rect) -> Mat4 {

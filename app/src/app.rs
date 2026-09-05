@@ -11,7 +11,7 @@ use cap_model::{MeshData, ModelInfo};
 use cap_ui::layout::{LayoutMode, ViewerMode};
 use cap_ui::motion::behavior as motion_behavior;
 use cap_video::VideoInfo;
-use cap_viewer::OrbitCamera;
+use cap_viewer::{OrbitCamera, ViewportBg};
 use egui::{ColorImage, TextureHandle, Vec2};
 
 use crate::loader::{paths_equal, normalize_path, ImageCache, LoadedPayload, LoadMessage, MediaLoader, next_generation};
@@ -47,6 +47,7 @@ pub enum LoadedMedia {
         info: ModelInfo,
         path: PathBuf,
         wireframe: bool,
+        bg: ViewportBg,
         mesh: Option<MeshData>,
         camera: OrbitCamera,
     },
@@ -78,6 +79,11 @@ pub struct LookApp {
     pub zoom: f32,
     pub fit_mode: bool,
     pub pan: Vec2,
+    pub window_fit: bool,
+    pub zoom_tween: Option<crate::image_viewport::ZoomTween>,
+    pub rename_open: bool,
+    pub rename_pattern: String,
+    pub rename_message: Option<String>,
     pub toast: Option<String>,
     pub error: Option<String>,
     /// Optional recovery actions for the current error (open externally, etc.).
@@ -147,6 +153,11 @@ impl LookApp {
             zoom: 1.0,
             fit_mode: true,
             pan: Vec2::ZERO,
+            window_fit: false,
+            zoom_tween: None,
+            rename_open: false,
+            rename_pattern: "{name}".into(),
+            rename_message: None,
             toast: None,
             error: None,
             error_actions: Vec::new(),
@@ -497,7 +508,7 @@ impl LookApp {
         }
         let idx = self.current_index;
         let len = self.folder_files.len();
-        for delta in [1isize, -1] {
+        for delta in [1isize, -1, 2, -2] {
             let ni = (idx as isize + delta).rem_euclid(len as isize) as usize;
             let path = &self.folder_files[ni];
             if classify_extension(path) == Some(MediaKind::Image)
@@ -530,6 +541,7 @@ impl LookApp {
                     info,
                     path,
                     wireframe: false,
+                    bg: ViewportBg::Gradient,
                     mesh,
                     camera,
                 });
@@ -684,6 +696,23 @@ impl LookApp {
         }
     }
 
+    pub fn seek_video_by(&mut self, delta_secs: f32, ctx: &egui::Context) {
+        if matches!(self.media, Some(LoadedMedia::Video { .. })) {
+            self.video_engine.seek_relative(delta_secs);
+            self.touch();
+            self.poll_video_events(ctx);
+        }
+    }
+
+    pub fn reset_model_camera(&mut self) {
+        if let Some(LoadedMedia::Model { mesh, camera, .. }) = &mut self.media {
+            *camera = match mesh.as_ref() {
+                Some(m) => OrbitCamera::fit_bounds(&m.bounds),
+                None => OrbitCamera::default(),
+            };
+        }
+    }
+
     pub fn toggle_fullscreen(&mut self, ctx: &egui::Context) {
         let entering = self.viewer_mode != ViewerMode::Fullscreen;
         self.viewer_mode = if entering {
@@ -773,6 +802,57 @@ impl LookApp {
         }
     }
 
+    pub fn apply_batch_rename(&mut self) {
+        self.rename_message = None;
+        let pattern = self.rename_pattern.clone();
+        if pattern.trim().is_empty() {
+            self.rename_message = Some("Pattern is empty".into());
+            return;
+        }
+        let files = self.folder_files.clone();
+        let mut renamed = 0usize;
+        let mut errors = 0usize;
+        for (i, old) in files.iter().enumerate() {
+            let stem = old
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("file");
+            let ext = old
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| format!(".{e}"))
+                .unwrap_or_default();
+            let new_stem = pattern
+                .replace("{n}", &(i + 1).to_string())
+                .replace("{name}", stem)
+                .replace("{i}", &format!("{i:03}"));
+            let new_name = format!("{new_stem}{ext}");
+            let new_path = old.with_file_name(new_name);
+            if new_path == *old {
+                continue;
+            }
+            if new_path.exists() {
+                errors += 1;
+                continue;
+            }
+            match std::fs::rename(old, &new_path) {
+                Ok(()) => {
+                    renamed += 1;
+                    if let Some(slot) = self.folder_files.get_mut(i) {
+                        *slot = new_path.clone();
+                    }
+                    if self.current_path.as_ref() == Some(old) {
+                        self.current_path = Some(new_path);
+                    }
+                }
+                Err(_) => errors += 1,
+            }
+        }
+        self.thumbnails.clear();
+        self.rename_message = Some(format!("Renamed {renamed}, errors {errors}"));
+        self.touch();
+    }
+
     pub fn navigate_to_index(&mut self, index: usize) {
         if index >= self.folder_files.len() {
             return;
@@ -807,11 +887,12 @@ impl LookApp {
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|| format!("img-{}", self.current_index));
             let image = ColorImage::from_rgba_unmultiplied([width, height], &pixels);
-            let handle = ctx.load_texture(
-                path_key.clone(),
-                image,
-                egui::TextureOptions::LINEAR,
-            );
+            let filter = if self.prefer_nearest_filter() {
+                egui::TextureOptions::NEAREST
+            } else {
+                egui::TextureOptions::LINEAR
+            };
+            let handle = ctx.load_texture(path_key.clone(), image, filter);
             let stored = self.store_texture(path_key, handle);
             if let Some(LoadedMedia::Image { texture, .. }) = &mut self.media {
                 *texture = Some(stored);

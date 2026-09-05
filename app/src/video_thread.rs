@@ -15,6 +15,7 @@ pub enum VideoCommand {
     StepForward,
     StepBackward,
     Seek(f32),
+    SeekRelative(f32),
     Shutdown,
 }
 
@@ -88,6 +89,10 @@ impl VideoThread {
 
     pub fn seek(&self, fraction: f32) {
         let _ = self.cmd_tx.send(VideoCommand::Seek(fraction));
+    }
+
+    pub fn seek_relative(&self, delta_secs: f32) {
+        let _ = self.cmd_tx.send(VideoCommand::SeekRelative(delta_secs));
     }
 
     pub fn poll(&self) -> Vec<VideoEvent> {
@@ -198,6 +203,15 @@ fn video_loop(cmd_rx: Receiver<VideoCommand>, evt_tx: Sender<VideoEvent>) {
             VideoCommand::Seek(fraction) => {
                 if let Some(p) = player.as_mut() {
                     if let Some(frame) = p.seek_fraction(fraction) {
+                        let _ = evt_tx.send(VideoEvent::Frame(frame));
+                        emit_position(&evt_tx, p);
+                    }
+                    let _ = evt_tx.send(VideoEvent::Playing(false));
+                }
+            }
+            VideoCommand::SeekRelative(delta) => {
+                if let Some(p) = player.as_mut() {
+                    if let Some(frame) = p.seek_by_secs(delta) {
                         let _ = evt_tx.send(VideoEvent::Frame(frame));
                         emit_position(&evt_tx, p);
                     }

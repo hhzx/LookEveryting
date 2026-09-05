@@ -2,13 +2,13 @@
 
 use std::time::Instant;
 
-use cap_core::all_supported_filter;
+use cap_core::{all_supported_filter, ThemePreference};
 use cap_i18n::Locale;
 use cap_ui::colors::{Palette, Semantic};
 use cap_ui::layout::LayoutMode;
 use cap_ui::spacing::{component, space};
 use cap_ui::widgets::{ghost_button, icon_button, paint_floating_panel, panel_frame, titlebar_frame};
-use cap_viewer::draw_mesh_viewport;
+use cap_viewer::{draw_mesh_viewport, ViewportBg};
 use egui::{pos2, vec2, Align2, Color32, Frame, RichText, Sense, Ui, Vec2};
 
 use crate::app::{ErrorAction, LoadedMedia, LookApp};
@@ -133,6 +133,15 @@ pub fn draw(app: &mut LookApp, ctx: &egui::Context) {
             .default_width(360.0)
             .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
             .show(ctx, |ui| shortcuts_panel(app, ui));
+    }
+
+    if app.rename_open {
+        egui::Window::new(app.i18n.t("rename-title"))
+            .collapsible(false)
+            .resizable(false)
+            .default_width(420.0)
+            .anchor(Align2::CENTER_CENTER, vec2(0.0, 40.0))
+            .show(ctx, |ui| rename_panel(app, ui));
     }
 
     if let Some(err) = app.error.clone() {
@@ -357,6 +366,7 @@ fn viewport(app: &mut LookApp, ui: &mut Ui) {
             info,
             path,
             wireframe,
+            bg,
             mesh,
             camera,
         }) => {
@@ -367,7 +377,7 @@ fn viewport(app: &mut LookApp, ui: &mut Ui) {
                 } else {
                     mesh.indices.len() / 3
                 };
-                draw_mesh_viewport(ui, rect, mesh, camera, *wireframe);
+                draw_mesh_viewport(ui, rect, mesh, camera, *wireframe, *bg);
                 let hud = format!(
                     "{} · {}",
                     app.i18n
@@ -489,6 +499,14 @@ fn draw_video_view(
             if let Some(pos) = seek_resp.interact_pointer_pos() {
                 let frac = ((pos.x - bar_rect.left()) / bar_rect.width()).clamp(0.0, 1.0);
                 app.seek_video(frac, ui.ctx());
+                let preview_secs = duration_secs * frac;
+                draw_seek_bubble(ui, pos, &format_time(preview_secs));
+            }
+        } else if seek_resp.hovered() {
+            if let Some(pos) = seek_resp.hover_pos() {
+                let frac = ((pos.x - bar_rect.left()) / bar_rect.width()).clamp(0.0, 1.0);
+                let preview_secs = duration_secs * frac;
+                draw_seek_bubble(ui, pos, &format_time(preview_secs));
             }
         }
 
@@ -561,6 +579,22 @@ fn format_time(secs: f32) -> String {
     } else {
         format!("{m}:{s:02}")
     }
+}
+
+fn draw_seek_bubble(ui: &mut Ui, pointer: egui::Pos2, label: &str) {
+    let font = egui::FontId::monospace(12.0);
+    let galley = ui.painter().layout_no_wrap(
+        label.to_string(),
+        font.clone(),
+        Semantic::FG_PRIMARY,
+    );
+    let pad = vec2(8.0, 4.0);
+    let size = galley.size() + pad * 2.0;
+    let center = pointer + vec2(0.0, -22.0);
+    let bubble = egui::Rect::from_center_size(center, size);
+    ui.painter()
+        .rect_filled(bubble, 4.0, Palette::SURFACE_OVERLAY);
+    ui.painter().galley(bubble.min + pad, galley, Semantic::FG_PRIMARY);
 }
 
 fn format_system_time(time: std::time::SystemTime) -> String {
@@ -747,6 +781,9 @@ fn floating_toolbar(app: &mut LookApp, ui: &mut Ui, viewport_size: Vec2) {
                     app.actual_size_image();
                     app.touch();
                 }
+                if icon_button(ui, "Win", app.i18n.t("toolbar-window-fit")).clicked() {
+                    app.toggle_window_fit(ui.ctx());
+                }
                 if icon_button(ui, "−", app.i18n.t("toolbar-zoom-out")).clicked() {
                     app.zoom_image(viewport_size, img_size, 1.0 / 1.15);
                     app.touch();
@@ -802,6 +839,15 @@ fn floating_toolbar(app: &mut LookApp, ui: &mut Ui, viewport_size: Vec2) {
                     }
                     app.touch();
                 }
+                if icon_button(ui, "◎", "Background").clicked() {
+                    if let Some(LoadedMedia::Model { bg, .. }) = &mut app.media {
+                        *bg = match *bg {
+                            ViewportBg::Solid => ViewportBg::Gradient,
+                            ViewportBg::Gradient => ViewportBg::Solid,
+                        };
+                    }
+                    app.touch();
+                }
                 if icon_button(ui, "↗", app.i18n.t("common-open")).clicked() {
                     app.open_model_externally();
                     app.touch();
@@ -823,6 +869,10 @@ fn floating_toolbar(app: &mut LookApp, ui: &mut Ui, viewport_size: Vec2) {
         }
         if icon_button(ui, "?", app.i18n.t("shortcuts-title")).clicked() {
             app.shortcuts_open = !app.shortcuts_open;
+            app.touch();
+        }
+        if icon_button(ui, "Aa", app.i18n.t("rename-title")).clicked() {
+            app.rename_open = !app.rename_open;
             app.touch();
         }
     });
@@ -919,6 +969,32 @@ fn settings_panel(app: &mut LookApp, ui: &mut Ui) {
         });
 
     ui.add_space(8.0);
+    ui.label(app.i18n.t("settings-theme"));
+    let theme_label = match app.settings.theme {
+        ThemePreference::Dark => app.i18n.t("settings-theme-dark"),
+        ThemePreference::Light => app.i18n.t("settings-theme-light"),
+        ThemePreference::System => app.i18n.t("settings-theme-system"),
+    };
+    egui::ComboBox::from_id_salt("theme")
+        .selected_text(theme_label)
+        .show_ui(ui, |ui| {
+            let options = [
+                (ThemePreference::Dark, "settings-theme-dark"),
+                (ThemePreference::Light, "settings-theme-light"),
+                (ThemePreference::System, "settings-theme-system"),
+            ];
+            for (pref, key) in options {
+                if ui
+                    .selectable_label(app.settings.theme == pref, app.i18n.t(key))
+                    .clicked()
+                {
+                    app.settings.theme = pref;
+                    let _ = cap_core::save_settings(&app.settings);
+                }
+            }
+        });
+
+    ui.add_space(8.0);
     ui.checkbox(
         &mut app.settings.toolbar_auto_hide,
         app.i18n.t("settings-toolbar-auto-hide"),
@@ -974,16 +1050,26 @@ fn handle_shortcuts(app: &mut LookApp, ctx: &egui::Context) {
     let img_size = app.media.as_ref().and_then(|m| m.image_size()).unwrap_or(Vec2::ZERO);
     let is_image = img_size != Vec2::ZERO;
     let is_video = matches!(&app.media, Some(LoadedMedia::Video { .. }));
+    let is_model = matches!(&app.media, Some(LoadedMedia::Model { .. }));
 
     ctx.input(|i| {
         if i.modifiers.ctrl && i.key_pressed(egui::Key::O) {
             open_file_dialog(app);
         }
-        if i.key_pressed(egui::Key::ArrowLeft) && !(is_video && i.modifiers.shift) {
-            app.navigate(-1);
+        // Video: Left/Right = ±5s seek; Up/Down navigate files. Non-video: arrows navigate.
+        if i.key_pressed(egui::Key::ArrowLeft) {
+            if is_video && !i.modifiers.shift {
+                app.seek_video_by(-5.0, ctx);
+            } else if !is_video {
+                app.navigate(-1);
+            }
         }
-        if i.key_pressed(egui::Key::ArrowRight) && !(is_video && i.modifiers.shift) {
-            app.navigate(1);
+        if i.key_pressed(egui::Key::ArrowRight) {
+            if is_video && !i.modifiers.shift {
+                app.seek_video_by(5.0, ctx);
+            } else if !is_video {
+                app.navigate(1);
+            }
         }
         if i.key_pressed(egui::Key::ArrowUp) {
             app.navigate(-1);
@@ -1062,8 +1148,19 @@ fn handle_shortcuts(app: &mut LookApp, ctx: &egui::Context) {
             app.actual_size_image();
             app.touch();
         }
+        if is_image && i.key_pressed(egui::Key::W) && !i.modifiers.ctrl {
+            app.toggle_window_fit(ctx);
+        }
+        if i.key_pressed(egui::Key::F2) {
+            app.rename_open = !app.rename_open;
+            app.touch();
+        }
         if is_image && i.key_pressed(egui::Key::R) {
             app.reset_image_view();
+            app.touch();
+        }
+        if is_model && i.key_pressed(egui::Key::R) {
+            app.reset_model_camera();
             app.touch();
         }
         if is_image && (i.key_pressed(egui::Key::Plus) || i.key_pressed(egui::Key::Equals)) {
@@ -1084,14 +1181,41 @@ fn update_drag_hover(app: &mut LookApp, ctx: &egui::Context) {
     app.drag_hover = ctx.input(|i| !i.raw.hovered_files.is_empty());
 }
 
+fn rename_panel(app: &mut LookApp, ui: &mut Ui) {
+    ui.label(
+        RichText::new(app.i18n.t("rename-hint"))
+            .size(12.0)
+            .color(Semantic::FG_MUTED),
+    );
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.label(app.i18n.t("rename-pattern"));
+        ui.text_edit_singleline(&mut app.rename_pattern);
+    });
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        if ui.button(app.i18n.t("rename-apply")).clicked() {
+            app.apply_batch_rename();
+        }
+        if ui.button(app.i18n.t("common-close")).clicked() {
+            app.rename_open = false;
+        }
+    });
+    if let Some(msg) = &app.rename_message {
+        ui.label(RichText::new(msg).size(11.0).color(Semantic::FG_SECONDARY));
+    }
+}
+
 fn shortcuts_panel(app: &mut LookApp, ui: &mut Ui) {
     ui.label(RichText::new(app.i18n.t("help-hint")).color(Semantic::FG_MUTED).size(12.0));
     ui.separator();
     let rows = [
-        ("← → ↑ ↓", "Navigate files"),
+        ("← → ↑ ↓", "Navigate files (video ←→ = ±5s)"),
+        ("Shift+← →", "Frame step (video)"),
         ("Space", "Slideshow / Play-Pause"),
         ("F / 0", "Fit"),
         ("1", "Actual size 100%"),
+        ("R", "Reset view / camera"),
         ("F11", "Fullscreen"),
         ("I", "Info panel"),
         ("M", "Mute (video)"),

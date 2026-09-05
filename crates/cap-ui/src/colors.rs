@@ -1,8 +1,8 @@
-//! Color palette and semantic colors — dark minimal theme.
+//! Color palette and semantic colors — dark / light themes.
 
 use egui::Color32;
 
-/// Raw palette tokens from `design/tokens/colors.json`.
+/// Raw palette tokens from `design/tokens/colors.json` (dark).
 pub struct Palette;
 
 impl Palette {
@@ -35,7 +35,33 @@ impl Palette {
     pub const TOOLBAR: Color32 = Color32::from_rgba_premultiplied(0x11, 0x11, 0x13, 0xE6);
 }
 
-/// Semantic color roles for widgets.
+/// Light-mode surfaces; accent matches [`Palette::ACCENT`].
+pub struct LightPalette;
+
+impl LightPalette {
+    pub const CANVAS: Color32 = Color32::from_rgb(0xF4, 0xF4, 0xF5);
+    pub const SURFACE: Color32 = Color32::from_rgb(0xFF, 0xFF, 0xFF);
+    pub const SURFACE_RAISED: Color32 = Color32::from_rgb(0xFA, 0xFA, 0xFA);
+    pub const SURFACE_OVERLAY: Color32 = Color32::from_rgb(0xE4, 0xE4, 0xE7);
+    pub const BORDER_SUBTLE: Color32 = Color32::from_rgb(0xE4, 0xE4, 0xE7);
+    pub const BORDER_DEFAULT: Color32 = Color32::from_rgb(0xD4, 0xD4, 0xD8);
+    pub const BORDER_STRONG: Color32 = Color32::from_rgb(0xA1, 0xA1, 0xAA);
+
+    pub const TEXT_PRIMARY: Color32 = Color32::from_rgb(0x09, 0x09, 0x0B);
+    pub const TEXT_SECONDARY: Color32 = Color32::from_rgb(0x52, 0x52, 0x5B);
+    pub const TEXT_TERTIARY: Color32 = Color32::from_rgb(0x71, 0x71, 0x7A);
+    pub const TEXT_DISABLED: Color32 = Color32::from_rgb(0xA1, 0xA1, 0xAA);
+
+    pub const ACCENT: Color32 = Palette::ACCENT;
+    pub const ACCENT_HOVER: Color32 = Palette::ACCENT_HOVER;
+    pub const ACCENT_MUTED: Color32 = Color32::from_rgb(0xDB, 0xEA, 0xFE);
+    pub const ACCENT_SUBTLE: Color32 = Color32::from_rgb(0xEF, 0xF6, 0xFF);
+
+    pub const VIEWPORT: Color32 = Color32::from_rgb(0x00, 0x00, 0x00);
+    pub const TOOLBAR: Color32 = Color32::from_rgba_premultiplied(0xFF, 0xFF, 0xFF, 0xE6);
+}
+
+/// Semantic color roles for widgets (dark defaults for custom chrome).
 pub struct Semantic;
 
 impl Semantic {

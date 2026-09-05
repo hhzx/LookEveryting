@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+cap-core = { path = "../cap-core" }
 egui.workspace = true
 
 [dev-dependencies]
