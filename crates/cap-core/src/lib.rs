@@ -189,6 +189,7 @@ fn dirs_fallback() -> PathBuf {
 
 const IMAGE_EXTENSIONS: &[&str] = &[
     "jpg", "jpeg", "png", "gif", "webp", "bmp", "tif", "tiff", "ico", "avif",
+    "cr2", "cr3", "nef", "arw", "dng", "orf", "rw2", "raf", "pef", "srw",
 ];
 
 const VIDEO_EXTENSIONS: &[&str] = &[

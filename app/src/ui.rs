@@ -1189,6 +1189,9 @@ fn handle_shortcuts(app: &mut LookApp, ctx: &egui::Context) {
         if i.key_pressed(egui::Key::End) && !app.folder_files.is_empty() {
             app.navigate_to_index(app.folder_files.len() - 1);
         }
+        if is_video && i.key_pressed(egui::Key::T) {
+            app.cycle_audio_track();
+        }
         if is_video && i.key_pressed(egui::Key::A) && !i.modifiers.shift {
             app.mark_ab_a();
         }
@@ -1278,9 +1281,18 @@ fn handle_shortcuts(app: &mut LookApp, ctx: &egui::Context) {
             app.rename_open = !app.rename_open;
             app.touch();
         }
-        if is_image && i.key_pressed(egui::Key::R) {
+        if is_image && i.key_pressed(egui::Key::R) && !i.modifiers.ctrl {
             app.reset_image_view();
             app.touch();
+        }
+        if is_image && i.key_pressed(egui::Key::R) && i.modifiers.ctrl {
+            app.rotate_image_cw();
+        }
+        if is_image && i.key_pressed(egui::Key::H) && !i.modifiers.shift {
+            app.flip_image(true);
+        }
+        if is_image && i.key_pressed(egui::Key::H) && i.modifiers.shift {
+            app.flip_image(false);
         }
         if is_model && i.key_pressed(egui::Key::R) {
             app.reset_model_camera();
@@ -1338,12 +1350,15 @@ fn shortcuts_panel(app: &mut LookApp, ui: &mut Ui) {
         ("[ ]", "Playback speed"),
         ("A / B", "A-B loop markers"),
         ("Shift+A", "Clear A-B loop"),
+        ("T", "Cycle audio track"),
         ("Space", "Slideshow / Play-Pause"),
         ("V", "Toggle subtitles (.srt)"),
         ("M", "Mute (video)"),
         ("F / 0", "Fit"),
         ("1", "Actual size 100%"),
         ("R", "Reset view / camera"),
+        ("Ctrl+R", "Rotate image 90°"),
+        ("H / Shift+H", "Flip H / V"),
         ("F11", "Fullscreen"),
         ("I", "Info panel"),
         ("? ", "This help"),

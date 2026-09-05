@@ -114,6 +114,8 @@ pub struct LookApp {
     /// A-B loop markers (seconds). Active when both set and B > A.
     pub ab_a: Option<f32>,
     pub ab_b: Option<f32>,
+    pub audio_tracks: Vec<cap_video::AudioTrackInfo>,
+    pub audio_track_index: usize,
     /// wgpu mesh PaintCallback path is initialized.
     pub gpu_mesh: bool,
     /// Upload current model mesh to GPU on next draw.
@@ -193,6 +195,8 @@ impl LookApp {
             playback_rate: 1.0,
             ab_a: None,
             ab_b: None,
+            audio_tracks: Vec::new(),
+            audio_track_index: 0,
             gpu_mesh: false,
             mesh_upload_pending: false,
             drag_hover: false,
@@ -303,6 +307,82 @@ impl LookApp {
         self.touch();
     }
 
+    /// Rotate current image 90° clockwise (in-memory pixel buffer).
+    pub fn rotate_image_cw(&mut self) {
+        let Some(LoadedMedia::Image {
+            width,
+            height,
+            rgba,
+            texture,
+            native_width,
+            native_height,
+            ..
+        }) = &mut self.media
+        else {
+            return;
+        };
+        let Some(src) = rgba.as_ref() else {
+            return;
+        };
+        let (w, h) = (*width as usize, *height as usize);
+        let mut dst = vec![0u8; src.len()];
+        for y in 0..h {
+            for x in 0..w {
+                let si = (y * w + x) * 4;
+                let dx = h - 1 - y;
+                let dy = x;
+                let di = (dy * h + dx) * 4;
+                dst[di..di + 4].copy_from_slice(&src[si..si + 4]);
+            }
+        }
+        *rgba = Some(dst);
+        std::mem::swap(width, height);
+        std::mem::swap(native_width, native_height);
+        *texture = None;
+        self.fit_image();
+        self.touch();
+    }
+
+    pub fn flip_image(&mut self, horizontal: bool) {
+        let Some(LoadedMedia::Image {
+            width,
+            height,
+            rgba,
+            texture,
+            ..
+        }) = &mut self.media
+        else {
+            return;
+        };
+        let Some(src) = rgba.as_mut() else {
+            return;
+        };
+        let (w, h) = (*width as usize, *height as usize);
+        if horizontal {
+            for y in 0..h {
+                for x in 0..(w / 2) {
+                    let a = (y * w + x) * 4;
+                    let b = (y * w + (w - 1 - x)) * 4;
+                    for i in 0..4 {
+                        src.swap(a + i, b + i);
+                    }
+                }
+            }
+        } else {
+            for y in 0..(h / 2) {
+                for x in 0..w {
+                    let a = (y * w + x) * 4;
+                    let b = ((h - 1 - y) * w + x) * 4;
+                    for i in 0..4 {
+                        src.swap(a + i, b + i);
+                    }
+                }
+            }
+        }
+        *texture = None;
+        self.touch();
+    }
+
     pub fn flash_play_pause(&mut self) {
         self.play_flash_until = Some(Instant::now() + Duration::from_millis(400));
     }
@@ -345,6 +425,8 @@ impl LookApp {
         if classify_extension(&path) == Some(MediaKind::Video) {
             self.ab_a = None;
             self.ab_b = None;
+            self.audio_tracks = cap_video::AudioDecoder::list_tracks(&path);
+            self.audio_track_index = 0;
             let info = VideoInfo::from_path(&path).unwrap_or_else(|_| VideoInfo {
                 format: path
                     .extension()
@@ -911,8 +993,9 @@ impl LookApp {
         }) = &mut self.media
         {
             if texture.is_none() {
-                rgba.take()
-                    .map(|pixels| (*width as usize, *height as usize, pixels))
+                rgba
+                    .as_ref()
+                    .map(|pixels| (*width as usize, *height as usize, pixels.clone()))
             } else {
                 None
             }
@@ -1002,6 +1085,15 @@ impl LookApp {
     pub fn clear_ab_loop(&mut self) {
         self.ab_a = None;
         self.ab_b = None;
+        self.touch();
+    }
+
+    pub fn cycle_audio_track(&mut self) {
+        if self.audio_tracks.len() < 2 {
+            return;
+        }
+        self.audio_track_index = (self.audio_track_index + 1) % self.audio_tracks.len();
+        self.video_engine.set_audio_track(self.audio_track_index);
         self.touch();
     }
 

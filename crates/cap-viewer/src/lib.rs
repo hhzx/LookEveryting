@@ -1,6 +1,7 @@
 //! 3D model viewport rendering for LookEveryting (CPU fallback + wgpu).
 
 mod gpu_mesh;
+mod thumb;
 
 use std::sync::Arc;
 
@@ -10,6 +11,7 @@ use egui::{Color32, Pos2, Rect, Response, Sense, Ui, Vec2};
 use glam::{Mat4, Vec3, Vec4};
 
 pub use gpu_mesh::{MeshPaintCallback, MeshRenderResources};
+pub use thumb::render_mesh_thumbnail;
 
 /// Orbit camera around a model centroid.
 #[derive(Debug, Clone)]

@@ -43,6 +43,7 @@ struct UploadedMesh {
     index_count: u32,
     uniform_buf: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
+    base_color: [f32; 4],
 }
 
 struct OffscreenTargets {
@@ -232,6 +233,7 @@ impl MeshRenderResources {
             index_count: indices.len() as u32,
             uniform_buf,
             bind_group,
+            base_color: mesh.base_color,
         });
     }
 
@@ -395,7 +397,7 @@ impl CallbackTrait for MeshPaintCallback {
         let uniforms = Uniforms {
             mvp: res.pending_mvp,
             light_dir: [0.35, 0.75, 0.45, 0.0],
-            base_color: [0.35, 0.72, 0.95, 1.0],
+            base_color: mesh.base_color,
         };
         queue.write_buffer(&mesh.uniform_buf, 0, bytemuck::bytes_of(&uniforms));
 

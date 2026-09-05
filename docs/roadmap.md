@@ -27,15 +27,20 @@
 
 - [x] 视频/3D 缩略图真实首帧
 - [x] A-B 循环
-- [ ] ASS / 多音轨 / 内嵌字幕轨
-- [ ] 材质贴图预览 / PBR
+- [x] ASS/SSA 侧车字幕 + 多音轨切换（`T`）
+- [x] glTF base color / albedo 材质因子（PBR-lite）
 - [x] 轻量批量重命名
-- [ ] RAW 预览（可选）
+- [x] RAW 预览（crude demosaic）
+- [x] 图片旋转 / 翻转（Ctrl+R / H / Shift+H）
 
 ## v1.0 — 产品化
 
 - [x] 便携 zip（`scripts/build.ps1`）
-- [ ] MSI 安装包
+- [x] 每用户安装脚本（`scripts/install.ps1`，非 MSI）
 - [x] 主题跟随系统
 - [x] 格式支持表 `docs/FORMATS.md`
-- [ ] 自动更新（可选）
+- [x] 更新检查脚本（`scripts/check-update.ps1`，可选）
+- [ ] 完整 MSI / 自动下载安装（可选）
+- [ ] 完整 DXVA/D3D11 设备管理（硬解偏好已落地）
+- [ ] 完整 PBR（metallic-roughness / normal / IBL）
+- [ ] 内嵌字幕轨（MF）

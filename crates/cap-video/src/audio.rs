@@ -35,11 +35,23 @@ pub struct AudioDecoder {
     _unused: (),
 }
 
+#[derive(Debug, Clone)]
+pub struct AudioTrackInfo {
+    pub index: u32,
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub label: String,
+}
+
 impl AudioDecoder {
     pub fn open(path: &Path) -> Result<Self, AudioError> {
+        Self::open_track(path, 0)
+    }
+
+    pub fn open_track(path: &Path, track_index: usize) -> Result<Self, AudioError> {
         #[cfg(windows)]
         {
-            match mf_audio::MfAudio::open(path) {
+            match mf_audio::MfAudio::open(path, track_index) {
                 Ok(inner) => Ok(Self { inner: Some(inner) }),
                 Err(AudioError::NoAudio) => Ok(Self { inner: None }),
                 Err(e) => Err(e),
@@ -47,8 +59,20 @@ impl AudioDecoder {
         }
         #[cfg(not(windows))]
         {
-            let _ = path;
+            let _ = (path, track_index);
             Ok(Self { _unused: () })
+        }
+    }
+
+    pub fn list_tracks(path: &Path) -> Vec<AudioTrackInfo> {
+        #[cfg(windows)]
+        {
+            mf_audio::list_audio_tracks(path)
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = path;
+            Vec::new()
         }
     }
 
@@ -111,8 +135,53 @@ mod mf_audio {
 
     pub struct MfAudio {
         reader: IMFSourceReader,
+        stream: u32,
         format: AudioFormat,
         ended: bool,
+    }
+
+    pub fn list_audio_tracks(path: &Path) -> Vec<super::AudioTrackInfo> {
+        mf_runtime::ensure_initialized();
+        let Ok(wide) = path_to_file_url(path) else {
+            return Vec::new();
+        };
+        unsafe {
+            let mut attrs = None;
+            if MFCreateAttributes(&mut attrs, 1).is_err() {
+                return Vec::new();
+            }
+            let Some(attrs) = attrs else {
+                return Vec::new();
+            };
+            let Ok(reader) = MFCreateSourceReaderFromURL(PCWSTR(wide.as_ptr()), Some(&attrs))
+            else {
+                return Vec::new();
+            };
+            let mut tracks = Vec::new();
+            for i in 0..64u32 {
+                let Ok(mt) = reader.GetNativeMediaType(i, 0) else {
+                    continue;
+                };
+                let Ok(major) = mt.GetGUID(&MF_MT_MAJOR_TYPE) else {
+                    continue;
+                };
+                if major != MFMediaType_Audio {
+                    continue;
+                }
+                let channels = mt.GetUINT32(&MF_MT_AUDIO_NUM_CHANNELS).unwrap_or(2) as u16;
+                let sample_rate = mt
+                    .GetUINT32(&MF_MT_AUDIO_SAMPLES_PER_SECOND)
+                    .unwrap_or(48_000);
+                let n = tracks.len() + 1;
+                tracks.push(super::AudioTrackInfo {
+                    index: i,
+                    sample_rate,
+                    channels,
+                    label: format!("Track {n} ({channels}ch {sample_rate}Hz)"),
+                });
+            }
+            tracks
+        }
     }
 
     impl MfAudio {
@@ -120,7 +189,7 @@ mod mf_audio {
             self.format
         }
 
-        pub fn open(path: &Path) -> Result<Self, AudioError> {
+        pub fn open(path: &Path, track_index: usize) -> Result<Self, AudioError> {
             mf_runtime::ensure_initialized();
             unsafe {
                 let wide = path_to_file_url(path)?;
@@ -135,12 +204,27 @@ mod mf_audio {
                 let reader = MFCreateSourceReaderFromURL(PCWSTR(wide.as_ptr()), Some(&attrs))
                     .map_err(|e| AudioError::Message(format!("open audio: {e}")))?;
 
-                let stream = MF_SOURCE_READER_FIRST_AUDIO_STREAM.0 as u32;
-                if reader.GetNativeMediaType(stream, 0).is_err() {
+                let tracks = {
+                    let mut t = Vec::new();
+                    for i in 0..64u32 {
+                        let Ok(mt) = reader.GetNativeMediaType(i, 0) else {
+                            continue;
+                        };
+                        let Ok(major) = mt.GetGUID(&MF_MT_MAJOR_TYPE) else {
+                            continue;
+                        };
+                        if major == MFMediaType_Audio {
+                            t.push(i);
+                        }
+                    }
+                    t
+                };
+                if tracks.is_empty() {
                     return Err(AudioError::NoAudio);
                 }
+                let stream = tracks[track_index.min(tracks.len() - 1)];
 
-                let format = configure_pcm_float(&reader)?;
+                let format = configure_pcm_float(&reader, stream)?;
                 reader
                     .SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS.0 as u32, false)
                     .ok();
@@ -150,6 +234,7 @@ mod mf_audio {
 
                 Ok(Self {
                     reader,
+                    stream,
                     format,
                     ended: false,
                 })
@@ -176,7 +261,7 @@ mod mf_audio {
             if self.ended {
                 return Ok(());
             }
-            let stream = MF_SOURCE_READER_FIRST_AUDIO_STREAM.0 as u32;
+            let stream = self.stream;
             let mut guard = 0u32;
             while guard < 64 {
                 guard += 1;
@@ -216,9 +301,11 @@ mod mf_audio {
         }
     }
 
-    fn configure_pcm_float(reader: &IMFSourceReader) -> Result<AudioFormat, AudioError> {
+    fn configure_pcm_float(
+        reader: &IMFSourceReader,
+        stream: u32,
+    ) -> Result<AudioFormat, AudioError> {
         unsafe {
-            let stream = MF_SOURCE_READER_FIRST_AUDIO_STREAM.0 as u32;
             let native = reader
                 .GetNativeMediaType(stream, 0)
                 .map_err(|_| AudioError::NoAudio)?;

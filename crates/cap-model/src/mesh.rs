@@ -42,12 +42,39 @@ impl Bounds {
     }
 }
 
-/// Triangle mesh for software rendering.
-#[derive(Debug, Clone, Default)]
+/// Triangle mesh for preview rendering.
+#[derive(Debug, Clone)]
 pub struct MeshData {
     pub vertices: Vec<[f32; 3]>,
     pub indices: Vec<u32>,
     pub bounds: Bounds,
+    /// Optional per-vertex UVs (same length as vertices when present).
+    pub uvs: Vec<[f32; 2]>,
+    /// PBR base color factor (linear RGB + alpha).
+    pub base_color: [f32; 4],
+    /// Optional albedo texture (RGBA8).
+    pub albedo: Option<AlbedoMap>,
+}
+
+/// RGBA8 albedo map.
+#[derive(Debug, Clone)]
+pub struct AlbedoMap {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+impl Default for MeshData {
+    fn default() -> Self {
+        Self {
+            vertices: Vec::new(),
+            indices: Vec::new(),
+            bounds: Bounds::default(),
+            uvs: Vec::new(),
+            base_color: [0.35, 0.72, 0.95, 1.0],
+            albedo: None,
+        }
+    }
 }
 
 const MAX_TRIANGLES: usize = 120_000;
@@ -143,6 +170,7 @@ fn load_obj(path: &Path) -> Result<MeshData, ModelError> {
         vertices,
         indices,
         bounds: Bounds::default(),
+        ..Default::default()
     })
 }
 
@@ -164,14 +192,18 @@ fn load_stl(path: &Path) -> Result<MeshData, ModelError> {
         vertices,
         indices,
         bounds: Bounds::default(),
+        ..Default::default()
     })
 }
 
 fn load_gltf(path: &Path) -> Result<MeshData, ModelError> {
-    let (document, buffers, _) = gltf::import(path)?;
+    let (document, buffers, images) = gltf::import(path)?;
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
+    let mut uvs = Vec::new();
     let mut base = 0u32;
+    let mut base_color = [0.35_f32, 0.72, 0.95, 1.0];
+    let mut albedo = None;
 
     for mesh in document.meshes() {
         for primitive in mesh.primitives() {
@@ -184,8 +216,52 @@ fn load_gltf(path: &Path) -> Result<MeshData, ModelError> {
                 .read_positions()
                 .map(|iter| iter.map(|[x, y, z]| [x, y, z]).collect())
                 .unwrap_or_default();
+            let count = positions.len();
+            let tex: Vec<[f32; 2]> = reader
+                .read_tex_coords(0)
+                .map(|tc| tc.into_f32().map(|[u, v]| [u, v]).collect())
+                .unwrap_or_else(|| vec![[0.0, 0.0]; count]);
+
+            if albedo.is_none() {
+                let mat = primitive.material();
+                let pbr = mat.pbr_metallic_roughness();
+                base_color = pbr.base_color_factor();
+                if let Some(info) = pbr.base_color_texture() {
+                    let tex_idx = info.texture().source().index();
+                    if let Some(img) = images.get(tex_idx) {
+                        let rgba = match img.format {
+                            gltf::image::Format::R8G8B8A8 => img.pixels.clone(),
+                            gltf::image::Format::R8G8B8 => img
+                                .pixels
+                                .chunks(3)
+                                .flat_map(|c| [c[0], c[1], c[2], 255])
+                                .collect(),
+                            gltf::image::Format::R8 => img
+                                .pixels
+                                .iter()
+                                .flat_map(|&c| [c, c, c, 255])
+                                .collect(),
+                            gltf::image::Format::R8G8 => img
+                                .pixels
+                                .chunks(2)
+                                .flat_map(|c| [c[0], c[1], 0, 255])
+                                .collect(),
+                            _ => Vec::new(),
+                        };
+                        if !rgba.is_empty() {
+                            albedo = Some(AlbedoMap {
+                                width: img.width,
+                                height: img.height,
+                                rgba,
+                            });
+                        }
+                    }
+                }
+            }
+
             let local_base = base;
             vertices.extend(positions);
+            uvs.extend(tex);
             if let Some(idx) = reader.read_indices() {
                 for i in idx.into_u32() {
                     indices.push(local_base + i);
@@ -203,6 +279,9 @@ fn load_gltf(path: &Path) -> Result<MeshData, ModelError> {
         vertices,
         indices,
         bounds: Bounds::default(),
+        uvs,
+        base_color,
+        albedo,
     })
 }
 
@@ -245,6 +324,7 @@ fn load_fbx(path: &Path) -> Result<MeshData, ModelError> {
         vertices,
         indices,
         bounds: Bounds::default(),
+        ..Default::default()
     })
 }
 

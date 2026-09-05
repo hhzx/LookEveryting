@@ -11,7 +11,7 @@ use std::path::Path;
 use cap_core::MediaKind;
 use thiserror::Error;
 
-pub use audio::{AudioChunk, AudioDecoder, AudioError, AudioFormat};
+pub use audio::{AudioChunk, AudioDecoder, AudioError, AudioFormat, AudioTrackInfo};
 pub use player::{PlayerError, VideoFrame, VideoPlayer};
 pub use thumb::decode_thumbnail;
 

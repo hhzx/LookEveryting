@@ -89,7 +89,7 @@ pub fn ensure_thumbnails(app: &mut LookApp, ctx: &egui::Context) {
         }
         if matches!(
             classify_extension(path),
-            Some(MediaKind::Image) | Some(MediaKind::Video)
+            Some(MediaKind::Image) | Some(MediaKind::Video) | Some(MediaKind::Model)
         ) {
             app.loader.request_thumbnail(path.clone());
             queued += 1;

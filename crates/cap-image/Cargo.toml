@@ -9,6 +9,7 @@ license.workspace = true
 cap-core = { path = "../cap-core" }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff", "ico"] }
 kamadak-exif = "0.6"
+rawloader = "0.37"
 thiserror = "2"
 
 [dev-dependencies]

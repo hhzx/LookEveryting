@@ -265,6 +265,20 @@ fn thumb_loop(jobs: Receiver<ThumbJob>, out: Sender<LoadMessage>) {
                     let _ = out.send(LoadMessage::Thumbnail { path, decoded });
                 }
             }
+            Some(MediaKind::Model) => {
+                if let Ok(mesh) = load_mesh(&path) {
+                    if let Some(rgba) = cap_viewer::render_mesh_thumbnail(&mesh, 240) {
+                        let decoded = DecodedImage {
+                            width: 240,
+                            height: 240,
+                            rgba,
+                            native_width: 240,
+                            native_height: 240,
+                        };
+                        let _ = out.send(LoadMessage::Thumbnail { path, decoded });
+                    }
+                }
+            }
             _ => {}
         }
     }

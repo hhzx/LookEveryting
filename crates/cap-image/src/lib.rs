@@ -18,6 +18,8 @@ pub enum ImageError {
     Io(#[from] std::io::Error),
     #[error("decode error: {0}")]
     Decode(#[from] image::ImageError),
+    #[error("raw decode error: {0}")]
+    Raw(String),
 }
 
 /// Decoded image ready for texture upload.
@@ -36,6 +38,9 @@ impl DecodedImage {
     pub fn from_path(path: &Path) -> Result<Self, ImageError> {
         if cap_core::classify_extension(path) != Some(MediaKind::Image) {
             return Err(ImageError::UnsupportedFormat);
+        }
+        if is_raw_ext(path) {
+            return decode_raw_preview(path);
         }
 
         let reader = ImageReader::open(path)?;
@@ -100,6 +105,20 @@ pub fn decode_staged(
     if cap_core::classify_extension(path) != Some(MediaKind::Image) {
         return Err(ImageError::UnsupportedFormat);
     }
+    if is_raw_ext(path) {
+        let full = decode_raw_preview(path)?;
+        let preview = if full.width.max(full.height) > preview_edge {
+            Some(scale_decoded(&full, preview_edge))
+        } else {
+            None
+        };
+        let view = if full.width.max(full.height) > view_edge {
+            scale_decoded(&full, view_edge)
+        } else {
+            full
+        };
+        return Ok((preview, view));
+    }
 
     let (native_w, native_h) = probe_dimensions(path)?;
     let max_dim = native_w.max(native_h);
@@ -155,6 +174,14 @@ pub fn decode_prefetch(path: &Path, max_edge: u32) -> Result<DecodedImage, Image
 pub fn decode_thumbnail(path: &Path, max_size: u32) -> Result<DecodedImage, ImageError> {
     if cap_core::classify_extension(path) != Some(MediaKind::Image) {
         return Err(ImageError::UnsupportedFormat);
+    }
+    if is_raw_ext(path) {
+        let full = decode_raw_preview(path)?;
+        return Ok(if full.width.max(full.height) > max_size {
+            scale_decoded(&full, max_size)
+        } else {
+            full
+        });
     }
     let (w, h) = probe_dimensions(path)?;
     if w.max(h) <= max_size {
@@ -224,6 +251,10 @@ pub fn decode_gif_animation(path: &Path) -> Result<Vec<AnimFrame>, ImageError> {
 
 /// Load image dimensions without full decode.
 pub fn probe_dimensions(path: &Path) -> Result<(u32, u32), ImageError> {
+    if is_raw_ext(path) {
+        let image = rawloader::decode_file(path).map_err(|e| ImageError::Raw(e.to_string()))?;
+        return Ok((image.width as u32, image.height as u32));
+    }
     if is_jpeg(path) {
         if let Ok(dims) = jpeg_probe_dimensions(path) {
             return Ok(dims);
@@ -367,6 +398,88 @@ fn guess_format(path: &Path) -> Option<ImageFormat> {
         "ico" => Some(ImageFormat::Ico),
         "avif" => Some(ImageFormat::Avif),
         _ => None,
+    }
+}
+
+fn is_raw_ext(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(|s| s.to_ascii_lowercase())
+            .as_deref(),
+        Some("cr2" | "cr3" | "nef" | "arw" | "dng" | "orf" | "rw2" | "raf" | "pef" | "srw")
+    )
+}
+
+/// Crude RAW → RGBA preview (nearest-neighbor demosaic + downsample).
+fn decode_raw_preview(path: &Path) -> Result<DecodedImage, ImageError> {
+    let image = rawloader::decode_file(path).map_err(|e| ImageError::Raw(e.to_string()))?;
+    let (raw_w, raw_h) = (image.width, image.height);
+    let data = match image.data {
+        rawloader::RawImageData::Integer(v) => v,
+        rawloader::RawImageData::Float(_) => {
+            return Err(ImageError::Raw("float RAW not supported".into()));
+        }
+    };
+    let black = image.blacklevels[0] as f32;
+    let white = image.whitelevels[0].max(1) as f32;
+    let max_edge = 2048u32;
+    let scale = (max_edge as f32 / raw_w.max(raw_h).max(1) as f32).min(1.0);
+    let out_w = ((raw_w as f32 * scale).round() as u32).max(1);
+    let out_h = ((raw_h as f32 * scale).round() as u32).max(1);
+    let mut rgba = vec![0u8; (out_w * out_h * 4) as usize];
+    for y in 0..out_h {
+        for x in 0..out_w {
+            let sx = ((x as f32 / out_w as f32) * raw_w as f32) as usize;
+            let sy = ((y as f32 / out_h as f32) * raw_h as f32) as usize;
+            let idx = sy * raw_w + sx;
+            let sample = data.get(idx).copied().unwrap_or(0) as f32;
+            let v = ((sample - black) / (white - black).max(1.0)).clamp(0.0, 1.0);
+            // Apply rough WB using coeffs.
+            let r = (v * image.wb_coeffs[0].max(0.1)).clamp(0.0, 1.0);
+            let g = (v * image.wb_coeffs[1].max(0.1)).clamp(0.0, 1.0);
+            let b = (v * image.wb_coeffs[2].max(0.1)).clamp(0.0, 1.0);
+            let o = ((y * out_w + x) * 4) as usize;
+            rgba[o] = (r * 255.0) as u8;
+            rgba[o + 1] = (g * 255.0) as u8;
+            rgba[o + 2] = (b * 255.0) as u8;
+            rgba[o + 3] = 255;
+        }
+    }
+    Ok(DecodedImage {
+        width: out_w,
+        height: out_h,
+        rgba,
+        native_width: raw_w as u32,
+        native_height: raw_h as u32,
+    })
+}
+
+fn scale_decoded(src: &DecodedImage, max_edge: u32) -> DecodedImage {
+    let scale = (max_edge as f32 / src.width.max(src.height).max(1) as f32).min(1.0);
+    if scale >= 0.999 {
+        return src.clone();
+    }
+    let nw = ((src.width as f32 * scale).round() as u32).max(1);
+    let nh = ((src.height as f32 * scale).round() as u32).max(1);
+    let mut rgba = vec![0u8; (nw * nh * 4) as usize];
+    for y in 0..nh {
+        for x in 0..nw {
+            let sx = ((x as f32 / nw as f32) * src.width as f32) as u32;
+            let sy = ((y as f32 / nh as f32) * src.height as f32) as u32;
+            let si = ((sy * src.width + sx) * 4) as usize;
+            let di = ((y * nw + x) * 4) as usize;
+            if si + 3 < src.rgba.len() {
+                rgba[di..di + 4].copy_from_slice(&src.rgba[si..si + 4]);
+            }
+        }
+    }
+    DecodedImage {
+        width: nw,
+        height: nh,
+        rgba,
+        native_width: src.native_width,
+        native_height: src.native_height,
     }
 }
 

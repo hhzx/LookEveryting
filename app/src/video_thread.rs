@@ -25,6 +25,7 @@ pub enum VideoCommand {
     SeekResume(f32),
     SetVolume(f32),
     SetRate(f32),
+    SetAudioTrack(usize),
     Shutdown,
 }
 
@@ -120,6 +121,10 @@ impl VideoThread {
         let _ = self.cmd_tx.send(VideoCommand::SetRate(rate));
     }
 
+    pub fn set_audio_track(&self, index: usize) {
+        let _ = self.cmd_tx.send(VideoCommand::SetAudioTrack(index));
+    }
+
     pub fn poll(&self) -> Vec<VideoEvent> {
         let mut out = Vec::new();
         loop {
@@ -180,6 +185,8 @@ fn video_loop(cmd_rx: Receiver<VideoCommand>, evt_tx: Sender<VideoEvent>) {
     let mut audio_out: Option<AudioOut> = None;
     let mut volume = 1.0_f32;
     let mut rate = 1.0_f32;
+    let mut current_path: Option<PathBuf> = None;
+    let mut audio_track: usize = 0;
 
     while let Ok(cmd) = cmd_rx.recv() {
         match cmd {
@@ -189,6 +196,8 @@ fn video_loop(cmd_rx: Receiver<VideoCommand>, evt_tx: Sender<VideoEvent>) {
             } => {
                 player = None;
                 audio = None;
+                audio_track = 0;
+                current_path = Some(path.clone());
                 if let Some(out) = audio_out.take() {
                     out.shared.set_playing(false);
                     out.shared.clear();
@@ -207,7 +216,7 @@ fn video_loop(cmd_rx: Receiver<VideoCommand>, evt_tx: Sender<VideoEvent>) {
                             let first_frame = p.current_frame().cloned();
 
                             let mut has_audio = false;
-                            if let Ok(decoder) = AudioDecoder::open(&path) {
+                            if let Ok(decoder) = AudioDecoder::open_track(&path, audio_track) {
                                 if let Some(fmt) = decoder.format() {
                                     has_audio = true;
                                     audio_out = AudioOut::try_start(fmt.sample_rate, fmt.channels);
@@ -368,6 +377,31 @@ fn video_loop(cmd_rx: Receiver<VideoCommand>, evt_tx: Sender<VideoEvent>) {
                 rate = r.clamp(0.25, 2.0);
                 if let Some(p) = player.as_mut() {
                     p.set_rate(rate);
+                }
+            }
+            VideoCommand::SetAudioTrack(index) => {
+                audio_track = index;
+                let Some(path) = current_path.clone() else {
+                    continue;
+                };
+                let pos = player.as_ref().map(|p| p.position_secs()).unwrap_or(0.0);
+                let playing = player.as_ref().is_some_and(|p| p.is_playing());
+                if let Some(out) = audio_out.as_ref() {
+                    out.shared.clear();
+                    out.shared.set_playing(false);
+                }
+                audio = None;
+                audio_out = None;
+                if let Ok(mut decoder) = AudioDecoder::open_track(&path, audio_track) {
+                    if let Some(fmt) = decoder.format() {
+                        let _ = decoder.seek_secs(pos);
+                        audio_out = AudioOut::try_start(fmt.sample_rate, fmt.channels);
+                        if let Some(out) = audio_out.as_ref() {
+                            out.shared.set_volume(volume);
+                        }
+                        audio = Some(decoder);
+                        sync_audio(&mut audio, &audio_out, pos, playing);
+                    }
                 }
             }
             VideoCommand::Shutdown => break,
