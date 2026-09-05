@@ -21,6 +21,8 @@ pub enum VideoCommand {
     StepBackward,
     Seek(f32),
     SeekRelative(f32),
+    /// Seek then optionally resume playback (used by A-B loop).
+    SeekResume(f32),
     SetVolume(f32),
     SetRate(f32),
     Shutdown,
@@ -100,6 +102,10 @@ impl VideoThread {
 
     pub fn seek(&self, fraction: f32) {
         let _ = self.cmd_tx.send(VideoCommand::Seek(fraction));
+    }
+
+    pub fn seek_resume(&self, fraction: f32) {
+        let _ = self.cmd_tx.send(VideoCommand::SeekResume(fraction));
     }
 
     pub fn seek_relative(&self, delta_secs: f32) {
@@ -317,6 +323,23 @@ fn video_loop(cmd_rx: Receiver<VideoCommand>, evt_tx: Sender<VideoEvent>) {
                         let _ = a.seek_secs(p.position_secs());
                     }
                     let _ = evt_tx.send(VideoEvent::Playing(false));
+                }
+            }
+            VideoCommand::SeekResume(fraction) => {
+                if let Some(p) = player.as_mut() {
+                    if let Some(frame) = p.seek_fraction(fraction) {
+                        let _ = evt_tx.send(VideoEvent::Frame(frame));
+                        emit_position(&evt_tx, p);
+                    }
+                    if let Some(out) = audio_out.as_ref() {
+                        out.shared.clear();
+                    }
+                    if let Some(a) = audio.as_mut() {
+                        let _ = a.seek_secs(p.position_secs());
+                    }
+                    p.play();
+                    sync_audio(&mut audio, &audio_out, p.position_secs(), true);
+                    let _ = evt_tx.send(VideoEvent::Playing(true));
                 }
             }
             VideoCommand::SeekRelative(delta) => {

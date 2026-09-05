@@ -528,6 +528,28 @@ fn draw_video_view(
                 Palette::ACCENT,
             );
         }
+        if let (Some(a), Some(b)) = (app.ab_a, app.ab_b) {
+            if duration_secs > 0.0 && b > a {
+                let ax = bar_rect.left() + bar_rect.width() * (a / duration_secs).clamp(0.0, 1.0);
+                let bx = bar_rect.left() + bar_rect.width() * (b / duration_secs).clamp(0.0, 1.0);
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_max(
+                        egui::pos2(ax, bar_rect.top() - 2.0),
+                        egui::pos2(bx, bar_rect.bottom() + 2.0),
+                    ),
+                    2.0,
+                    Color32::from_rgba_unmultiplied(80, 200, 120, 90),
+                );
+            }
+        } else if let Some(a) = app.ab_a {
+            if duration_secs > 0.0 {
+                let ax = bar_rect.left() + bar_rect.width() * (a / duration_secs).clamp(0.0, 1.0);
+                ui.painter().line_segment(
+                    [egui::pos2(ax, bar_rect.top() - 4.0), egui::pos2(ax, bar_rect.bottom() + 4.0)],
+                    egui::Stroke::new(2.0_f32, Color32::from_rgb(80, 200, 120)),
+                );
+            }
+        }
         let seek_resp = ui.allocate_rect(bar_rect, Sense::click_and_drag());
         if seek_resp.clicked() || seek_resp.dragged() {
             if let Some(pos) = seek_resp.interact_pointer_pos() {
@@ -1167,6 +1189,15 @@ fn handle_shortcuts(app: &mut LookApp, ctx: &egui::Context) {
         if i.key_pressed(egui::Key::End) && !app.folder_files.is_empty() {
             app.navigate_to_index(app.folder_files.len() - 1);
         }
+        if is_video && i.key_pressed(egui::Key::A) && !i.modifiers.shift {
+            app.mark_ab_a();
+        }
+        if is_video && i.key_pressed(egui::Key::B) && !i.modifiers.shift {
+            app.mark_ab_b();
+        }
+        if is_video && i.key_pressed(egui::Key::A) && i.modifiers.shift {
+            app.clear_ab_loop();
+        }
         if is_video && i.key_pressed(egui::Key::OpenBracket) {
             app.playback_rate = (app.playback_rate - 0.25).max(0.5);
             app.video_engine.set_rate(app.playback_rate);
@@ -1305,6 +1336,8 @@ fn shortcuts_panel(app: &mut LookApp, ui: &mut Ui) {
         ("← → ↑ ↓", "Navigate files (video ←→ = ±5s)"),
         ("Shift+← →", "Frame step (video)"),
         ("[ ]", "Playback speed"),
+        ("A / B", "A-B loop markers"),
+        ("Shift+A", "Clear A-B loop"),
         ("Space", "Slideshow / Play-Pause"),
         ("V", "Toggle subtitles (.srt)"),
         ("M", "Mute (video)"),

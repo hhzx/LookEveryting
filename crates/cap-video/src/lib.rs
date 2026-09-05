@@ -3,6 +3,7 @@
 mod audio;
 mod mf_runtime;
 mod player;
+mod thumb;
 mod yuv;
 
 use std::path::Path;
@@ -12,6 +13,7 @@ use thiserror::Error;
 
 pub use audio::{AudioChunk, AudioDecoder, AudioError, AudioFormat};
 pub use player::{PlayerError, VideoFrame, VideoPlayer};
+pub use thumb::decode_thumbnail;
 
 #[derive(Debug, Error)]
 pub enum VideoError {

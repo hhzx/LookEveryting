@@ -247,8 +247,25 @@ fn load_prefetch_job(path: PathBuf, tx: &Sender<LoadMessage>) {
 
 fn thumb_loop(jobs: Receiver<ThumbJob>, out: Sender<LoadMessage>) {
     while let Ok(ThumbJob::Decode(path)) = jobs.recv() {
-        if let Ok(decoded) = cap_image::decode_thumbnail(&path, 240) {
-            let _ = out.send(LoadMessage::Thumbnail { path, decoded });
+        match classify_extension(&path) {
+            Some(MediaKind::Image) => {
+                if let Ok(decoded) = cap_image::decode_thumbnail(&path, 240) {
+                    let _ = out.send(LoadMessage::Thumbnail { path, decoded });
+                }
+            }
+            Some(MediaKind::Video) => {
+                if let Some(frame) = cap_video::decode_thumbnail(&path, 240) {
+                    let decoded = DecodedImage {
+                        width: frame.width,
+                        height: frame.height,
+                        rgba: frame.rgba,
+                        native_width: frame.width,
+                        native_height: frame.height,
+                    };
+                    let _ = out.send(LoadMessage::Thumbnail { path, decoded });
+                }
+            }
+            _ => {}
         }
     }
 }

@@ -87,7 +87,10 @@ pub fn ensure_thumbnails(app: &mut LookApp, ctx: &egui::Context) {
         {
             continue;
         }
-        if classify_extension(path) == Some(MediaKind::Image) {
+        if matches!(
+            classify_extension(path),
+            Some(MediaKind::Image) | Some(MediaKind::Video)
+        ) {
             app.loader.request_thumbnail(path.clone());
             queued += 1;
         }

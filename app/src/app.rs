@@ -111,6 +111,9 @@ pub struct LookApp {
     pub muted: bool,
     /// Video playback rate (0.5 / 1.0 / 1.5 / 2.0).
     pub playback_rate: f32,
+    /// A-B loop markers (seconds). Active when both set and B > A.
+    pub ab_a: Option<f32>,
+    pub ab_b: Option<f32>,
     /// wgpu mesh PaintCallback path is initialized.
     pub gpu_mesh: bool,
     /// Upload current model mesh to GPU on next draw.
@@ -188,6 +191,8 @@ impl LookApp {
             volume: 1.0,
             muted: false,
             playback_rate: 1.0,
+            ab_a: None,
+            ab_b: None,
             gpu_mesh: false,
             mesh_upload_pending: false,
             drag_hover: false,
@@ -338,6 +343,8 @@ impl LookApp {
         };
 
         if classify_extension(&path) == Some(MediaKind::Video) {
+            self.ab_a = None;
+            self.ab_b = None;
             let info = VideoInfo::from_path(&path).unwrap_or_else(|_| VideoInfo {
                 format: path
                     .extension()
@@ -941,6 +948,61 @@ impl LookApp {
             }
         }
         self.poll_video_events(ctx);
+        self.enforce_ab_loop(ctx);
+    }
+
+    fn enforce_ab_loop(&mut self, ctx: &egui::Context) {
+        let Some((a, b)) = self.ab_a.zip(self.ab_b) else {
+            return;
+        };
+        if b <= a {
+            return;
+        }
+        let Some(LoadedMedia::Video {
+            playing: true,
+            position_secs,
+            duration_secs,
+            ..
+        }) = &self.media
+        else {
+            return;
+        };
+        let duration = *duration_secs;
+        if duration <= 0.0 {
+            return;
+        }
+        if *position_secs >= b - 0.02 {
+            let frac = (a / duration).clamp(0.0, 1.0);
+            self.video_engine.seek_resume(frac);
+            self.poll_video_events(ctx);
+        }
+    }
+
+    pub fn mark_ab_a(&mut self) {
+        if let Some(LoadedMedia::Video { position_secs, .. }) = &self.media {
+            self.ab_a = Some(*position_secs);
+            if self.ab_b.is_some_and(|b| b <= *position_secs) {
+                self.ab_b = None;
+            }
+            self.touch();
+        }
+    }
+
+    pub fn mark_ab_b(&mut self) {
+        if let Some(LoadedMedia::Video { position_secs, .. }) = &self.media {
+            let pos = *position_secs;
+            if self.ab_a.is_none_or(|a| a >= pos) {
+                self.ab_a = Some((pos - 1.0).max(0.0));
+            }
+            self.ab_b = Some(pos);
+            self.touch();
+        }
+    }
+
+    pub fn clear_ab_loop(&mut self) {
+        self.ab_a = None;
+        self.ab_b = None;
+        self.touch();
     }
 
     pub fn poll_video(&mut self, ctx: &egui::Context) {
